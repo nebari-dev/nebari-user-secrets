@@ -264,19 +264,9 @@ Any pack that wants a user's secrets in its workloads:
 | A single admission policy | Rejected | A missing ConfigMap either blocks the whole cluster or switches the guard off |
 | Creator-signed assertions | Deferred | Useful where the policies cannot be installed, but replayable and weaker than the policies |
 
-## Evidence
+## Testing
 
-The admission policies were built and tested on throwaway kind clusters running **Kubernetes 1.30.13, 1.32.11 and 1.34.3** (the minimum supported version and the versions NIC deploys). **42 of 42 cases passed on each**, with a non-default service namespace so that the namespace substitution is tested too. The YAML, the test script and a transcript per version become `cluster/` and `test/policy/run.sh`.
-
-The spike changed the design three times, which is why it ran before this review:
-
-1. Reading `request.subResource` raised a CEL error on requests without a subresource, and `failurePolicy: Fail` turned that into denials. The expressions now guard with `has()`, and the guard's canary probe exists because of it.
-2. A binding's `managedFields` time does not advance when it changes from `[Warn]` back to `[Deny]`, so `verifiedSince` uses an object fingerprint instead of a timestamp.
-3. When both policies deny a request, which message the API server reports depends on evaluation order, so every probe is built so that exactly one policy can deny it.
-
-## Review history
-
-The design went through five rounds of adversarial review before this document. The first judged the direction "a reasonable direction with fixable gaps" and would not switch to any alternative; later passes found a cluster-wide denial and then a fail-open in the policy's missing-parameter handling, which led to the two-policy split and the spike. The final pass judged it ready for this review and for implementation planning.
+The admission policies have a case matrix (`test/policy/run.sh`) that runs against throwaway kind clusters on Kubernetes 1.30, 1.32 and 1.34, the minimum supported version and the versions NIC deploys. It covers every rule of both policies, the behaviour with the ConfigMap missing, `[Warn]` admission, kubelet-minted projected tokens and the TokenReview fields the service relies on, and it builds the bundle for a non-default namespace. Current transcripts are in `test/policy/results/`.
 
 ## Open questions
 
