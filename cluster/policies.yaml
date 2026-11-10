@@ -1,0 +1,145 @@
+# Policy A: always evaluated, no parameters. Rules that need no allowlist.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: user-secrets-pod-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "pods/*"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["serviceaccounts/token"]
+  variables:
+    # The service namespace is substituted by kustomize (replacements, delimiter ':', index 2).
+    - name: serviceAccount
+      expression: "'system:serviceaccount:us-system:user-secrets'"
+    - name: sub
+      expression: "has(request.subResource) ? request.subResource : ''"
+    - name: isPod
+      expression: >-
+        request.resource.resource == 'pods' &&
+        variables.sub in ['', 'status', 'ephemeralcontainers', 'resize']
+    - name: newSub
+      expression: >-
+        variables.isPod && has(object.metadata.annotations) &&
+        'nebari.dev/user-secrets-sub' in object.metadata.annotations
+        ? object.metadata.annotations['nebari.dev/user-secrets-sub'] : ''
+    - name: newApp
+      expression: >-
+        variables.isPod && has(object.metadata.annotations) &&
+        'nebari.dev/user-secrets-app' in object.metadata.annotations
+        ? object.metadata.annotations['nebari.dev/user-secrets-app'] : ''
+    - name: newLab
+      expression: >-
+        variables.isPod && has(object.metadata.labels) &&
+        'nebari.dev/user-secrets' in object.metadata.labels
+        ? object.metadata.labels['nebari.dev/user-secrets'] : ''
+    - name: isUpdate
+      expression: "variables.isPod && request.operation == 'UPDATE' && oldObject != null"
+    - name: oldSub
+      expression: >-
+        variables.isUpdate && has(oldObject.metadata.annotations) &&
+        'nebari.dev/user-secrets-sub' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['nebari.dev/user-secrets-sub'] : ''
+    - name: oldApp
+      expression: >-
+        variables.isUpdate && has(oldObject.metadata.annotations) &&
+        'nebari.dev/user-secrets-app' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['nebari.dev/user-secrets-app'] : ''
+    - name: oldLab
+      expression: >-
+        variables.isUpdate && has(oldObject.metadata.labels) &&
+        'nebari.dev/user-secrets' in oldObject.metadata.labels
+        ? oldObject.metadata.labels['nebari.dev/user-secrets'] : ''
+    - name: isCreate
+      expression: "variables.isPod && request.operation == 'CREATE' && variables.sub == ''"
+  validations:
+    - expression: "!variables.isCreate || (variables.newSub == '' && variables.newApp == '') || variables.newLab == 'true'"
+      message: "user-secrets: annotated pods must carry the label nebari.dev/user-secrets=true"
+    - expression: "!variables.isCreate || variables.newLab == '' || (variables.newLab == 'true' && variables.newSub != '' && variables.newApp != '')"
+      message: "user-secrets: labelled pods must carry both user-secrets annotations"
+    - expression: "!variables.isUpdate || (variables.newSub == variables.oldSub && variables.newApp == variables.oldApp && variables.newLab == variables.oldLab)"
+      message: "user-secrets: the user-secrets label and annotations are immutable"
+    - expression: "!(variables.isUpdate && variables.sub == '' && variables.oldLab != '') || object.spec == oldObject.spec"
+      message: "user-secrets: the spec of a labelled pod is immutable"
+    - expression: "!(variables.isUpdate && variables.sub == 'ephemeralcontainers' && variables.oldLab != '')"
+      message: "user-secrets: ephemeral containers are not allowed on labelled pods"
+    - expression: >-
+        !(request.resource.resource == 'pods' && variables.sub == 'binding') ||
+        ((!has(object.metadata.annotations) || !object.metadata.annotations.exists(k, k.startsWith('nebari.dev/user-secrets'))) &&
+         (!has(object.metadata.labels) || !object.metadata.labels.exists(k, k.startsWith('nebari.dev/user-secrets'))))
+      message: "user-secrets: bindings may not carry user-secrets metadata"
+    - expression: >-
+        !(request.resource.resource == 'serviceaccounts' && variables.sub == 'token') ||
+        !(has(object.spec.audiences) && 'user-secrets' in object.spec.audiences) ||
+        'system:nodes' in request.userInfo.groups
+      message: "user-secrets: only kubelets may mint tokens for the user-secrets audience"
+    - expression: "!(variables.isCreate && request.userInfo.username == variables.serviceAccount) || (has(request.dryRun) && request.dryRun)"
+      message: "user-secrets: the service may only create pods as dry-run probes"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: user-secrets-pod-guard
+spec:
+  policyName: user-secrets-pod-guard
+  validationActions: [Deny]
+---
+# Policy B: creator allowlist. Parameters required; matches only labelled pods.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: user-secrets-creators
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  variables:
+    - name: parts
+      expression: "request.userInfo.username.split(':')"
+    - name: key
+      expression: >-
+        variables.parts.size() == 4 && variables.parts[0] == 'system' && variables.parts[1] == 'serviceaccount'
+        ? variables.parts[2] + '.' + variables.parts[3] : ''
+    - name: entry
+      expression: "variables.key != '' && has(params.data) && variables.key in params.data ? params.data[variables.key] : ''"
+    - name: nsList
+      expression: "variables.entry == '' ? [''] : variables.entry.split(';')[0].substring(11).split(',')"
+    - name: appList
+      expression: "variables.entry == '' ? [''] : variables.entry.split(';')[1].substring(5).split(',')"
+    - name: app
+      expression: >-
+        has(object.metadata.annotations) && 'nebari.dev/user-secrets-app' in object.metadata.annotations
+        ? object.metadata.annotations['nebari.dev/user-secrets-app'] : ''
+  validations:
+    - expression: "variables.entry != '' && request.namespace in variables.nsList && variables.app != '' && variables.app in variables.appList"
+      message: "user-secrets: requester is not a registered creator for this namespace and app"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: user-secrets-creators
+spec:
+  policyName: user-secrets-creators
+  validationActions: [Deny]
+  paramRef:
+    name: user-secrets-creators
+    namespace: us-system
+    parameterNotFoundAction: Deny
+  matchResources:
+    objectSelector:
+      matchLabels:
+        nebari.dev/user-secrets: "true"
