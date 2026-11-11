@@ -47,6 +47,8 @@ The design protects secrets from **other users**. Platform admins may see values
 
 **Sharing a server shares what that server can reach.** A user who shares a notebook server shares its secret files and environment, including the owner's JupyterHub token, with which a sharee can start Dask clusters as the owner and read the owner's Dask secrets. The landing page says so next to every Dask binding, and data-science-pack's share dialog says so next to sharing; narrowing this is a follow-up.
 
+**The landing page is inside the trust boundary for managing secrets.** The token that can change a user's secrets lives in the landing page's JavaScript, and the landing frontend pods are the only thing allowed to reach the management API. A cross-site scripting bug in the landing page could use a signed-in user's token to overwrite, rebind or delete that user's secrets. It could not read them, because the API never returns values, and it could not reach another user's secrets. A UI served by this service would carry the same exposure on its own origin; moving the screens to the landing page moves that exposure into nebari-landing's code, so its frontend security is part of this feature ([nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236)).
+
 ## Architecture
 
 ```mermaid
