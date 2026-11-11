@@ -7,6 +7,7 @@
 | **Primary repo** | `nebari-dev/nebari-user-secrets` (new) |
 | **Deployed by** | NIC, as foundational software (ADR-0022, proposed in [nebari-dev/nebari-infrastructure-core#764](https://github.com/nebari-dev/nebari-infrastructure-core/pull/764)) |
 | **Reference consumers** | `nebari-dev/data-science-pack` (JupyterHub, jhub-apps), `nebari-dev/dask-gateway-pack` (Dask) |
+| **Secrets screens** | The Nebari landing page, through this service's management API ([nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236)) |
 | **Supersedes** | `nebari-dev/external-auth-pack` (experimental) |
 | **Detailed spec** | [`docs/design/user-secrets-spec.md`](user-secrets-spec.md) (types, signatures, layout, test seams, journeys) |
 
@@ -22,7 +23,7 @@ The hard part is not storing secrets. It is knowing, inside the cluster, which u
 
 ## Goals
 
-- A user stores, rotates and deletes their own secrets in a web UI reachable from the Nebari landing page.
+- A user stores, rotates and deletes their own secrets from the Nebari landing page, which calls this service's management API ([nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236)).
 - A user chooses per secret which apps receive it and the suffix of its name; every delivered name is `NEBARI_SECRET_<SUFFIX>`.
 - Notebooks, jhub-apps apps and Dask clusters (scheduler and every worker, including adaptive scale-up) receive the enabled secrets at pod start as files under `/var/run/nebari/secrets/`, and optionally as environment variables.
 - A pod's user identity comes only from a creator registered for that namespace and app, enforced by the API server; the service refuses to deliver when it cannot confirm that.
@@ -33,6 +34,7 @@ The hard part is not storing secrets. It is knowing, inside the cluster, which u
 
 ## Non-goals (first release)
 
+- A UI served by this service. The landing page provides the screens; a standalone UI may come later.
 - Sharing secrets between users (the data model keeps this open).
 - A credential-injecting proxy ("use without seeing").
 - Live update of running pods; a rotation reaches pods started afterwards.
@@ -43,16 +45,18 @@ The hard part is not storing secrets. It is knowing, inside the cluster, which u
 
 The design protects secrets from **other users**. Platform admins may see values, since they can read the store's Kubernetes Secrets and exec into pods. For the first release, JupyterHub admins are also accepted as able to see values, because their role can open and share any server.
 
-**Sharing a server shares what that server can reach.** A user who shares a notebook server shares its secret files and environment, including the owner's JupyterHub token, with which a sharee can start Dask clusters as the owner and read the owner's Dask secrets. The UI says so next to sharing and every Dask binding; narrowing this is a follow-up.
+**Sharing a server shares what that server can reach.** A user who shares a notebook server shares its secret files and environment, including the owner's JupyterHub token, with which a sharee can start Dask clusters as the owner and read the owner's Dask secrets. The landing page says so next to every Dask binding, and data-science-pack's share dialog says so next to sharing; narrowing this is a follow-up.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    user(["User's browser"])
-    gw["Envoy gateway<br/>(Keycloak OIDC)"]
+    user(["User's browser<br/>(landing page, Keycloak token)"])
+    subgraph landns["Landing page namespace"]
+        nginx["Landing frontend nginx<br/>/api/user-secrets/"]
+    end
     subgraph svcns["user-secrets namespace"]
-        svc["user-secrets service<br/>UI + resolve API"]
+        svc["user-secrets service<br/>management API + resolve API<br/>(cluster-internal only)"]
         store[("Kubernetes Secrets<br/>us-&lt;sub&gt; per owner")]
         cm[/"user-secrets-creators<br/>ConfigMap"/]
     end
@@ -71,7 +75,8 @@ flowchart LR
         dw["Scheduler / worker pods"]
     end
 
-    user -->|"manage secrets"| gw --> svc
+    user -->|"manage secrets (Bearer)"| nginx
+    nginx -->|"proxied, Bearer unchanged"| svc
     svc --> store
     hub -->|"create labelled pod"| polA
     dgapi -->|"DaskCluster spec"| dgctl
@@ -203,6 +208,33 @@ The cluster-scoped objects ship apart from the Helm chart, in `cluster/` with a 
 
 Preconditions: Kubernetes 1.30 or later, and the NodeRestriction admission plugin. Rollout: bindings at `[Warn, Audit]` first to observe, then `[Deny]`; delivery starts for pods created after that.
 
+## Managing secrets
+
+The service has no UI and no route through the gateway. Users manage their secrets on the Nebari landing page, which reaches the service the same way it reaches `nebari-webapi` today: the landing frontend's nginx forwards a path (`/api/user-secrets/`) to the service's cluster-internal address and passes the `Authorization: Bearer` header through unchanged. The landing page side is tracked in [nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Landing page (browser)
+    participant N as Landing frontend nginx
+    participant S as user-secrets management API
+    participant St as Owner record us-&lt;sub&gt;
+    B->>B: keycloak-js holds the user's access token
+    B->>N: PUT /api/user-secrets/secrets/{name} (Bearer)
+    N->>S: proxied over in-cluster TLS, Bearer unchanged
+    S->>S: Verify signature, iss, exp, typ = Bearer, azp = landing SPA client
+    S->>St: Read, update and write the record for the token's sub
+    S-->>B: Summary without the value
+```
+
+- **Internal only.** The management API listens on its own port of the in-cluster Service. The service's NetworkPolicy admits that port only from the landing frontend pods, and the resolve port only from registered workload namespaces.
+- **Only tokens issued to the landing page.** The service checks the Keycloak token itself: RS256 signature against the realm keys, issuer, expiry, and `azp` equal to the landing page's SPA client. A token issued to any other client for the same user, such as one forwarded to another Nebari app, is rejected, so other apps cannot change a user's secrets. The service reads only the `Authorization` header, never a cookie, and another site cannot obtain the user's token to send one, so no CSRF token is needed.
+- **Acts only on the caller.** Every route works on the record for the token's `sub`. There is no way to name another user.
+- **Values are write-only.** A value goes in on create or rotate and never comes back out in any response.
+- **What the landing page gets.** The user's secrets with their bindings and per-app delivery status, the registered apps to bind to, usage against the limits, and the guard state so it can warn when delivery is stopped.
+- **Same TLS as resolve.** The landing nginx verifies the service against the CA the service publishes as a `user-secrets-ca` ConfigMap, the same mechanism consumer namespaces use. nginx reads the CA only at startup, so the CA is long-lived, and a replaced CA is published alongside the old one until the old one expires.
+- **The landing page must not depend on the service.** It has to start and work normally when user-secrets is missing or not ready; only the secrets screens fail. This is a requirement on nebari-landing#236.
+
 ## Delivery
 
 ```mermaid
@@ -226,7 +258,7 @@ flowchart LR
 - **Files, not environment variables, are the contract.** One file per secret, exact bytes, mode `0440`, group-readable through the pod's `fsGroup`. A memory volume dies with the pod, so values never reach etcd beyond the owner record and nothing needs cleaning up.
 - **Environment variables are optional.** A pack prepends `user-secrets-env` to its container's arguments; it exports each file as a variable and executes the real command.
 - **Names are always `NEBARI_SECRET_<SUFFIX>`.** A user-chosen variable name such as `LD_PRELOAD` or `PYTHONSTARTUP` could turn a secret into code execution, and no denylist is complete; a fixed prefix closes the class.
-- **Failures are visible.** `.status` in the pod, a stderr warning from the wrapper, and the last delivery per app in the UI. Consumers choose `soft` (start without secrets, the default) or `strict` (block the pod).
+- **Failures are visible.** `.status` in the pod, a stderr warning from the wrapper, and the last delivery per app on the landing page, through the management API. Consumers choose `soft` (start without secrets, the default) or `strict` (block the pod).
 - **Transport.** In-cluster TLS. cert-manager issues a self-signed CA inside the service namespace; each consumer chart creates an empty `user-secrets-ca` ConfigMap that the service fills.
 
 ## Consumer contract
@@ -263,6 +295,9 @@ Any pack that wants a user's secrets in its workloads:
 | One `.env` file | Rejected | Dotenv has no common escaping standard, so it cannot carry arbitrary bytes |
 | A single admission policy | Rejected | A missing ConfigMap either blocks the whole cluster or switches the guard off |
 | Creator-signed assertions | Deferred | Useful where the policies cannot be installed, but replayable and weaker than the policies |
+| A UI served by the service behind its own `NebariApp` | Replaced | Users already start from the landing page; a second web app means a second Keycloak client and a second place to look. A standalone UI can come later |
+| Management API exposed through the gateway | Rejected | Puts the service that holds every user's secrets on the public edge; the landing page's nginx proxy reaches it in-cluster, as it does for `nebari-webapi` |
+| Accepting any Keycloak token for the user | Rejected | Any Nebari app that receives the user's token could then rewrite their secrets |
 
 ## Testing
 
@@ -270,14 +305,16 @@ The admission policies have a case matrix (`test/policy/run.sh`) that runs again
 
 ## Open questions
 
-1. How Argo CD is kept from reverting the service-filled data of each consumer's `user-secrets-ca` ConfigMap under NIC's Argo CD settings.
+1. How Argo CD is kept from reverting the service-filled data of each consumer's and the landing page's `user-secrets-ca` ConfigMap under NIC's Argo CD settings.
 2. The pod-manifest golden-file harnesses for data-science-pack and dask-gateway-pack, which neither repo has today.
 3. `fsGroup` behaviour of `emptyDir` volumes with the init container's user, and the built binary's size.
 4. That cert-manager's namespaced CA chain works at NIC's pinned cert-manager version.
-5. Smaller verifications listed in the detailed spec (jhub-apps spawner detection, token `azp`, custom-scope enforcement, dask-gateway option fields).
+5. How NIC passes matching values to the user-secrets and landing charts (landing namespace, frontend pod selector, SPA client id, service address), and the Argo CD sync order between them.
+6. Smaller verifications listed in the detailed spec (jhub-apps spawner detection, the `azp` of landing page tokens, custom-scope enforcement, dask-gateway option fields).
 
 ## Future work
 
+- A standalone UI served by the service, if a deployment needs one without the landing page.
 - Sharing secrets with other users and groups (the data model already separates owner and grants).
 - Service (bot) accounts for background workloads.
 - Live refresh of running pods with the same pod-bound token.
