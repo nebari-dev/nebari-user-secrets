@@ -1,0 +1,9 @@
+# Local-only input for kustomize; never applied to the cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-secrets-install
+  annotations:
+    config.kubernetes.io/local-config: "true"
+data:
+  namespace: us-system

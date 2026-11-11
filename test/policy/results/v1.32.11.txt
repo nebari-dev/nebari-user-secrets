@@ -1,0 +1,87 @@
+### v1.32.11
+Creating cluster "us-vap-spike" ...
+ • Ensuring node image (kindest/node:v1.32.11) 🖼  ...
+ ✓ Ensuring node image (kindest/node:v1.32.11) 🖼
+ • Preparing nodes 📦   ...
+ ✓ Preparing nodes 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing CNI 🔌  ...
+ ✓ Installing CNI 🔌
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+ • Waiting ≤ 3m0s for control-plane = Ready ⏳  ...
+ ✓ Waiting ≤ 3m0s for control-plane = Ready ⏳
+ • Ready after 17s 💚
+Set kubectl context to "kind-us-vap-spike"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-us-vap-spike
+
+Have a question, bug, or feature request? Let us know! https://kind.sigs.k8s.io/#community 🙂
+Server Version: v1.32.11
+== setup
+== waiting for policies to take effect
+== policy B: creator allowlist
+PASS  hub creates labelled notebook pod in its namespace
+PASS  non-creator (mallory) creates labelled pod with A's sub
+PASS  hub creates labelled pod with an app it is not allowed (dask)
+PASS  dask controller creates labelled pod outside its namespace (hub-ns, app notebook)
+PASS  dask controller creates labelled dask pod in dask-ns
+== policy A: shape and immutability
+PASS  annotated pod without the label
+PASS  labelled pod missing the sub annotation (by hub, app allowed, so only policy A can deny)
+PASS  unannotated, unlabelled pod by anyone
+PASS  change sub annotation on labelled pod (admin)
+PASS  remove label from labelled pod (admin)
+PASS  add label and annotations to existing plain pod (admin)
+PASS  change sub via pods/status (admin)
+PASS  unrelated annotation change on labelled pod (admin)
+PASS  image patch on labelled pod (admin)
+PASS  image patch on unlabelled pod (admin, control)
+PASS  ephemeral container on labelled pod (admin)
+== pods/binding
+PASS  binding carrying user-secrets annotations
+PASS  plain binding
+== token minting
+PASS  mallory mints a user-secrets token
+PASS  admin mints a user-secrets token for the hub SA
+PASS  admin mints a token for another audience
+== kubelet-minted projected token (pod must start)
+PASS  pod with user-secrets projected token becomes Ready
+== TokenReview extras for a pod-bound token (open question 5)
+      authenticated: True | user: system:serviceaccount:hub-ns:notebook-wl
+      extra: {"authentication.kubernetes.io/credential-id": ["JTI=e16eae03-0b6e-458f-9ba9-7d9f0667d6cd"], "authentication.kubernetes.io/node-name": ["us-vap-spike-control-plane"], "authentication.kubernetes.io/node-uid": ["cc5f8ab2-cea8-48db-a569-ef9928191bec"], "authentication.kubernetes.io/pod-name": ["nb-a"], "authentication.kubernetes.io/pod-uid": ["4f7d8893-ef8e-4fbe-bb9c-8ed7daafc441"]}
+PASS  TokenReview extra carries pod-name and pod-uid
+== service account: dry-run only, and the probe
+PASS  service SA creates a real pod
+PASS  probe: compliant labelled dry-run pod denied by the creators policy
+PASS  probe: unlabelled annotated dry-run pod denied by the guard policy
+PASS  probe: non-compliant pod is stopped by Pod Security first (N3)
+PASS  probe: canary (plain compliant dry-run pod by the service SA) is admitted
+== label changes through subresources
+PASS  remove label via pods/status (admin)
+PASS  add label via pods/status to a plain pod (admin)
+PASS  binding carrying the user-secrets label
+== missing ConfigMap (P1)
+PASS  labelled pod by a real creator is denied while params are missing
+PASS  labelled pod by mallory is denied while params are missing
+PASS  unannotated pod in kube-system still created
+PASS  pods/status update on an unlabelled pod still allowed
+PASS  token for another audience still minted
+PASS  guard rules still active: annotation change on labelled pod
+PASS  guard rules still active: user-secrets token by mallory
+      denial text while params missing: The pods "nb-b2" is invalid: : ValidatingAdmissionPolicy 'user-secrets-creators' with binding 'user-secrets-creators' denied request: failed to configure binding: no params found for policy binding with `Deny` parameterNotFoundAction
+== ConfigMap restored
+PASS  hub creates labelled pod again after restore
+== Warn-only binding stops enforcement (guard must treat as bad), and the change is detectable
+PASS  with [Warn], mallory's labelled pod is admitted (real create)
+      binding before: rv/gen/uid 516 1 6df641b8-1941-4908-9308-af09a5be7873; after Warn and back to Deny: 608 3 6df641b8-1941-4908-9308-af09a5be7873
+      pod admitted under Warn created 2026-11-10T16:47:44Z; newest managedFields time on the binding 2026-11-10T16:47:33Z (not used: it does not advance on a value change)
+PASS  Warn-and-restore is detectable: resourceVersion changed and generation advanced by 2, uid unchanged
+      after delete and re-create: 615 1 1a92dd9c-d88e-4388-9e2e-c8989a68bb80
+PASS  delete-and-recreate is detectable: uid changed
+
+RESULT: 42 passed, 0 failed
