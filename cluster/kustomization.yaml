@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - install-config.yaml
+  - policies.yaml
+replacements:
+  - source:
+      kind: ConfigMap
+      name: user-secrets-install
+      fieldPath: data.namespace
+    targets:
+      - select:
+          kind: ValidatingAdmissionPolicy
+          name: user-secrets-pod-guard
+        fieldPaths:
+          - spec.variables.[name=serviceAccount].expression
+        options:
+          delimiter: ":"
+          index: 2
+      - select:
+          kind: ValidatingAdmissionPolicyBinding
+          name: user-secrets-creators
+        fieldPaths:
+          - spec.paramRef.namespace
