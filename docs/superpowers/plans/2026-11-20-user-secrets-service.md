@@ -170,7 +170,7 @@ Task reviews: Task 1 spec ✅ quality approved (3 Minor); Task 2 spec ✅ qualit
 | Step | Command / action | Expected |
 |---|---|---|
 | unit | `go test ./... -race -cover` | pass |
-| integration | `make kind-up && go test -tags integration ./internal/store/... ./internal/admin/... -run 'TestKEK|TestStore|test_' -v` | pass, including `TestKEKRotationOnKind` (journey 21) and `TestRecordsHoldNoPlaintext` (journey 20) |
+| integration | `make kind-up && go test -tags integration ./internal/store/... ./internal/admin/... -v` | pass, including `TestKEKRotationOnKind` (journey 21) and `TestRecordsHoldNoPlaintext` (journey 20) |
 | lint | `golangci-lint run` | 0 issues |
 
 ### Task 3: Audit sink
@@ -225,6 +225,23 @@ Task reviews: Task 1 spec ✅ quality approved (3 Minor); Task 2 spec ✅ qualit
 - [ ] **Step 3: Implement** with up to 5 conflict retries per record (re-Get, re-apply). `cmd/user-secrets/main.go` dispatches subcommands with the standard library `flag` package; only `admin` exists in this slice.
 - [ ] **Step 4: Integration test** `TestKEKRotationOnKind` (journey 21, store-level): write 3 records, run `RotateKEK` while a goroutine opens every record in a loop, assert zero open failures and that `RetireKEK(old)` then succeeds; `TestKEKMissingFailsClosed`: delete `user-secrets-kek` with records present, `Bootstrap` → `ErrKEKUnavailable` and no Secret created.
 - [ ] **Step 5: Run** `go test ./internal/admin/... && go test -tags integration ./internal/admin/... -v`: PASS. Update `docs/architecture/contracts.md` with the master-key Secret, the admin commands and the `key_event` audit lines.
+
+**Evidence (2026-11-20, Go 1.26.11 toolchain, kind us-dev on kindest/node:v1.34.3):**
+```
+$ go test ./... -race -cover
+ok  internal/admin   coverage: 81.5%    ok  internal/audit  coverage: 100.0%
+ok  internal/crypto  coverage: 91.2%    ok  internal/model  coverage: 100.0%
+ok  internal/store   coverage: 84.1%    (cmd/user-secrets: no unit tests yet, deferred to Task 11)
+$ go test -tags integration ./internal/store/... ./internal/admin/... -v
+--- PASS: TestRecordsHoldNoPlaintext (0.03s)        # journey 20
+--- PASS: TestKEKRotationOnKind (14.81s)            # journey 21: concurrent opens during rotate-kek, 0 failures, retire-kek succeeds
+--- PASS: TestKEKMissingFailsClosed (0.21s)         # journey 21: no key generated while records exist
+(all other store and admin tests PASS) ok store 0.124s, ok admin 15.251s
+$ golangci-lint run                          -> 0 issues.
+$ golangci-lint run --build-tags integration -> 0 issues.
+$ go vet ./... ; go vet -tags integration ./... -> clean
+```
+Task reviews: Task 3 clean. Task 4 approved, 1 fix round (Create NotFound not a conflict). Task 5: Important (stale cached primary after an outside rotation) fixed by reading the live primary on every wrap, plus a follow-up so concurrent reads cannot regress it. Task 6: Important (conflict test could not catch a stale re-write) fixed with real concurrent writes; admin commands now load the master key and never create it.
 
 **Checkpoint (controller, after the last task; implementers ignore):** run validation, paste evidence, open PR(s), STOP for go-ahead.
 

@@ -623,7 +623,7 @@ type SecretStore interface {
 	RecordDelivery(ctx context.Context, ownerSub string, s model.DeliveryStatus) error // rate-limited per app
 	Deliveries(ctx context.Context, ownerSub string) ([]model.DeliveryStatus, error)
 }
-func NewKubernetesSecretStore(c kubernetes.Interface, namespace string) *KubernetesSecretStore
+func NewKubernetesSecretStore(c kubernetes.Interface, namespace string, clock func() time.Time) *KubernetesSecretStore // clock drives the delivery-status rate limit
 
 // internal/crypto
 type KeyEncryptionKey interface {
