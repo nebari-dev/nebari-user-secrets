@@ -1,4 +1,4 @@
-.PHONY: test lint build policy-test
+.PHONY: test lint build policy-test kind-up kind-down
 
 test:
 	go test ./... -race -cover
@@ -11,3 +11,9 @@ build:
 
 policy-test:
 	bash test/policy/run-all.sh
+
+kind-up:
+	bash hack/kind.sh up
+
+kind-down:
+	bash hack/kind.sh down

@@ -6,3 +6,4 @@ test/policy/kubeconfig
 /nebari-user-secrets
 /bin/
 coverage.out
+.kube/
