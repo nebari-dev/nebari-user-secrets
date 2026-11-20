@@ -3,3 +3,6 @@ CLAUDE.md
 test/policy/kubeconfig
 *.swp
 .DS_Store
+/nebari-user-secrets
+/bin/
+coverage.out
