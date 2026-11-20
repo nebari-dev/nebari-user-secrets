@@ -11,12 +11,21 @@ This directory holds everything nebari-user-secrets needs at cluster scope. Unde
 
 The service also needs a `ClusterRoleBinding` to `system:auth-delegator` (TokenReview) and a read-only `ClusterRole` and binding on the two policies and two bindings. They belong in this directory too and will be added with the service, since they name its ServiceAccount.
 
+The same goes for the injector, a `MutatingWebhookConfiguration` named `user-secrets-injector` that names the service's `Service`:
+
+| Object | Evaluated on | Effect |
+|---|---|---|
+| `MutatingWebhookConfiguration` `user-secrets-injector`, entries `strict` and `soft` | Only pod creates labelled `nebari.dev/user-secrets: "true"` (`objectSelector`); no other request is sent to it | Adds the init container, its volumes, the projected token and the trust-bundle mount; never denies, never sets values, `sideEffects: None`. While the service is unreachable, labelled pods also labelled `nebari.dev/user-secrets-failure: strict` are refused (`failurePolicy: Fail`) and other labelled pods start without secrets (`Ignore`). Its `caBundle` is filled by cert-manager (`cert-manager.io/inject-ca-from`) |
+
+The policies run after every mutating webhook, so they decide on the pod as the injector left it.
+
 Unrelated pods, scheduler bindings, kubelet status updates and kubelet token minting all pass in the test matrix on every tested version. A CEL evaluation error in policy A would deny the requests it matches, which is why the service runs a canary probe and the matrix will run in CI once the repo has CI.
 
 ## Preconditions
 
 - Kubernetes 1.30 or later.
 - The NodeRestriction admission plugin, which keeps each kubelet to its own node's pods; the token rule relies on it.
+- NIC's cluster CA and trust bundle: the `ClusterIssuer` `nebari-ca-issuer` and the `nebari-trust-bundle` ConfigMap in every namespace ([nebari-dev/nebari-infrastructure-core#787](https://github.com/nebari-dev/nebari-infrastructure-core/pull/787)). The service's certificate comes from that issuer, so principals that can create cert-manager `Certificate` or `CertificateRequest` objects, and can also redirect traffic for the service's in-cluster name, could intercept resolve calls. Grant `Certificate` creation only to principals you would trust to serve any in-cluster Service name, as #787's internal-certificates guide advises.
 - Only admins may impersonate, or create tokens for, the creator ServiceAccounts (the JupyterHub hub and the dask-gateway controller). Check with `kubectl auth can-i impersonate serviceaccounts --as=<user> -n <namespace>` and `kubectl auth can-i create serviceaccounts/token --as=<user> -n <namespace>` for each non-admin principal with access to those namespaces.
 
 ## Namespace

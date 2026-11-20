@@ -3,17 +3,18 @@
 | | |
 |---|---|
 | **Status** | Proposed, open for feedback |
-| **Date** | 2026-11-10 |
+| **Date** | 2026-11-10, revised 2026-11-20 |
 | **Primary repo** | `nebari-dev/nebari-user-secrets` (new) |
 | **Deployed by** | NIC, as foundational software (ADR-0022, proposed in [nebari-dev/nebari-infrastructure-core#764](https://github.com/nebari-dev/nebari-infrastructure-core/pull/764)) |
 | **Reference consumers** | `nebari-dev/data-science-pack` (JupyterHub, jhub-apps), `nebari-dev/dask-gateway-pack` (Dask) |
 | **Secrets screens** | The Nebari landing page, through this service's management API ([nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236)) |
+| **Requires** | NIC's always-on cluster CA and trust bundle (`nebari-ca-issuer`, `nebari-trust-bundle`), proposed in [nebari-dev/nebari-infrastructure-core#787](https://github.com/nebari-dev/nebari-infrastructure-core/pull/787) (stacked on #776) |
 | **Supersedes** | `nebari-dev/external-auth-pack` (experimental) |
 | **Detailed spec** | [`docs/design/user-secrets-spec.md`](user-secrets-spec.md) (types, signatures, layout, test seams, journeys) |
 
 ## Summary
 
-Nebari users get one place to store their own API keys and similar secrets, tied to their Keycloak identity. The secrets they enable for an app arrive as files in that app's pods at start: notebook servers, jhub-apps apps and Dask clusters in the first release. Each pod proves which pod it is with a token the Kubernetes API server issues. Which user the pod belongs to is stamped on the pod by the component that already authenticated that user (the JupyterHub hub, the dask-gateway controller). Two admission policies in the API server make sure only those components can stamp it and that nobody can change it afterwards. The service fails closed when it cannot confirm those policies are in force.
+Nebari users get one place to store their own API keys and similar secrets, tied to their Keycloak identity and encrypted with a key per user. The secrets they enable for an app arrive as files in that app's pods at start: notebook servers, jhub-apps apps and Dask clusters in the first release. Each pod proves which pod it is with a token the Kubernetes API server issues. Which user the pod belongs to is stamped on the pod by the component that already authenticated that user (the JupyterHub hub, the dask-gateway controller). Two admission policies in the API server make sure only those components can stamp it and that nobody can change it afterwards. A mutating webhook adds everything else delivery needs, so a pack only sets a label and two annotations. The service fails closed when it cannot confirm those policies are in force.
 
 ## Problem
 
@@ -28,8 +29,9 @@ The hard part is not storing secrets. It is knowing, inside the cluster, which u
 - Notebooks, jhub-apps apps and Dask clusters (scheduler and every worker, including adaptive scale-up) receive the enabled secrets at pod start as files under `/var/run/nebari/secrets/`, and optionally as environment variables.
 - A pod's user identity comes only from a creator registered for that namespace and app, enforced by the API server; the service refuses to deliver when it cannot confirm that.
 - A user can see per app when secrets were last delivered and why the last attempt failed.
+- Stored values are encrypted with a key per user, wrapped by a master key the operator can rotate.
 - Every value read is audited.
-- The service is independent of any software pack: any pack can become a consumer by meeting a written contract, with values-only registration.
+- The service is independent of any software pack: any pack can become a consumer by meeting a written contract, with values-only registration and no code vendored from this repo.
 - Backward compatible: NIC installs the component on every cluster, but that changes no existing workload; every software pack's integration is off by default.
 
 ## Non-goals (first release)
@@ -43,11 +45,13 @@ The hard part is not storing secrets. It is knowing, inside the cluster, which u
 
 ## Threat model
 
-The design protects secrets from **other users**. Platform admins may see values, since they can read the store's Kubernetes Secrets and exec into pods. For the first release, JupyterHub admins are also accepted as able to see values, because their role can open and share any server.
+The design protects secrets from **other users**. Platform admins may see values, since they can read the master key and the store's Kubernetes Secrets, and exec into pods. Encryption keeps values out of anything that holds the owner records without the master key, such as an export or backup of the records, and lets a deleted user's values be destroyed by deleting their key. For the first release, JupyterHub admins are also accepted as able to see values, because their role can open and share any server.
 
 **Sharing a server shares what that server can reach.** A user who shares a notebook server shares its secret files and environment, including the owner's JupyterHub token, with which a sharee can start Dask clusters as the owner and read the owner's Dask secrets. The landing page says so next to every Dask binding, and data-science-pack's share dialog says so next to sharing; narrowing this is a follow-up.
 
 **The landing page is inside the trust boundary for managing secrets.** The token that can change a user's secrets lives in the landing page's JavaScript, and the landing frontend pods are the only thing allowed to reach the management API. A cross-site scripting bug in the landing page could use a signed-in user's token to overwrite, rebind or delete that user's secrets. It could not read them, because the API never returns values, and it could not reach another user's secrets. A UI served by this service would carry the same exposure on its own origin; moving the screens to the landing page moves that exposure into nebari-landing's code, so its frontend security is part of this feature ([nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236)).
+
+**Whoever can get certificates from the cluster CA is trusted not to intercept the service.** The service's TLS certificate comes from NIC's `nebari-ca-issuer`, and clients trust it through `nebari-trust-bundle`. Anyone who can create a cert-manager `Certificate` in any namespace can get a certificate for the service's name (NIC's [internal certificates guide](https://github.com/nebari-dev/nebari-infrastructure-core/pull/787), "Who can issue"). Using one would also need a way to redirect traffic for the service's in-cluster name to a pod they control. With both, they could capture an init container's 10-minute resolve token and replay it once for that pod's secrets. A CA private to this service would close the first half; one cluster CA that every pack uses, without a CA ConfigMap that the service writes into every consumer namespace, is the trade we take. Pods with the user-secrets label carry their token only in the init container and present it once.
 
 ## Architecture
 
@@ -58,11 +62,13 @@ flowchart LR
         nginx["Landing frontend nginx<br/>/api/user-secrets/"]
     end
     subgraph svcns["user-secrets namespace"]
-        svc["user-secrets service<br/>management API + resolve API<br/>(cluster-internal only)"]
-        store[("Kubernetes Secrets<br/>us-&lt;sub&gt; per owner")]
+        svc["user-secrets service<br/>management API + resolve API<br/>+ injector webhook<br/>(cluster-internal only)"]
+        store[("Kubernetes Secrets<br/>us-&lt;sub&gt; per owner<br/>(encrypted, per-user key)")]
+        kek[("user-secrets-kek<br/>master key")]
         cm[/"user-secrets-creators<br/>ConfigMap"/]
     end
     subgraph api["Kubernetes API server"]
+        mut{{"Mutating webhook<br/>labelled pods only"}}
         polA{{"Policy A<br/>always on"}}
         polB{{"Policy B<br/>creator allowlist"}}
         tr["TokenReview"]
@@ -80,9 +86,12 @@ flowchart LR
     user -->|"manage secrets (Bearer)"| nginx
     nginx -->|"proxied, Bearer unchanged"| svc
     svc --> store
-    hub -->|"create labelled pod"| polA
+    svc --> kek
+    hub -->|"create labelled pod"| mut
     dgapi -->|"DaskCluster spec"| dgctl
-    dgctl -->|"create labelled pods"| polA
+    dgctl -->|"create labelled pods"| mut
+    mut -->|"AdmissionReview"| svc
+    mut -->|"pod + delivery pieces"| polA
     polA --> polB
     polB -. "params" .-> cm
     polB -->|"admitted"| nb
@@ -112,9 +121,11 @@ sequenceDiagram
     participant S as user-secrets service
     participant M as Main container
     B->>H: Start server
-    H->>H: modify_pod_hook: label, annotations (sub, app),<br/>init container, volumes, projected token
+    H->>H: modify_pod_hook: label, annotations (sub, app)
     H->>K: Create pod (as hub ServiceAccount)
-    K-->>H: Admitted (creator registered for namespace and app)
+    K->>S: Mutating webhook (labelled pods only)
+    S-->>K: Patch: init container, volumes, projected token, mounts
+    K-->>H: Admitted by policies A and B (creator registered for namespace and app)
     K->>I: Pod scheduled, kubelet mints user-secrets token
     I->>S: POST /api/v1/resolve (Bearer pod token, TLS)
     S->>K: TokenReview, GET pod
@@ -140,10 +151,11 @@ sequenceDiagram
     N->>G: new_cluster() with the user's JupyterHub token
     G->>H: Validate token, GET /hub/api/user-secrets/identity
     H-->>G: User's sub
-    G->>G: Options handler adds label, annotations, init container
+    G->>G: Options handler adds label and annotations
     G->>K: Create DaskCluster
     loop Scheduler, then every worker, including adaptive scale-up
         C->>K: Create labelled pod (as controller ServiceAccount)
+        K->>S: Mutating webhook adds the delivery pieces
         K-->>C: Admitted (controller registered for Dask namespace, app dask)
         W->>S: Resolve with its own pod token
         S-->>W: User's Dask secrets
@@ -197,6 +209,23 @@ stateDiagram-v2
 
 **Trust in creators.** A compromised hub could name any user in its namespace; it nearly can today, because it holds every logged-in user's refresh token. A compromised dask-gateway API or controller could reach any user's Dask secrets, but not other apps'. dask-gateway-pack ships its own small policy so that only the gateway API can write a `DaskCluster` carrying these annotations.
 
+### The injector
+
+A creator sets only who the pod is for. Everything else delivery needs is added by a mutating webhook the service serves, `user-secrets-injector`, so no pack vendors code from this repo or tracks its init image.
+
+| | |
+|---|---|
+| **Matches** | Pod `CREATE` with the label `nebari.dev/user-secrets: "true"` (`objectSelector`). Every other pod is never sent to it. |
+| **Adds** | The `user-secrets-init` init container (the image the service release pins), the memory volume for the files, the wrapper volume, the projected token (`audience: user-secrets`, 600 seconds) mounted only into the init container, the `nebari-trust-bundle` ConfigMap mounted only into the init container, read-only mounts of the files and the wrapper into the workload container, and an `fsGroup` when the pod has none. With the annotation `nebari.dev/user-secrets-export-env: "true"` it also prepends the wrapper to the workload container's `args`. |
+| **Workload container** | The first container, which is the workload container in KubeSpawner and dask-gateway pods. A pack can name others with the annotation `nebari.dev/user-secrets-containers`. |
+| **Never** | Denies a pod, sets a value, changes the ServiceAccount, labels or annotations. Denial is the policies' job: they run after every mutating webhook, so they check the finished pod. |
+| **Side effects** | None, so dry-run requests, including the guard's probes, go through it. Idempotent, with `reinvocationPolicy: IfNeeded`, so a later webhook that adds containers gets the mounts too. |
+| **TLS** | Serving certificate from `nebari-ca-issuer`; the API server's `caBundle` is filled by cert-manager's `cert-manager.io/inject-ca-from`. |
+
+**When the webhook is unreachable, the pack's failure mode decides.** The configuration has two entries. Pods labelled `nebari.dev/user-secrets-failure: strict` go to the entry with `failurePolicy: Fail`, and are refused while the service is down. All other labelled pods go to the entry with `failurePolicy: Ignore` and start without the delivery pieces: no secret files, no wrapper and no `.status` file. A missing `.status` tells a user that injection failed, not delivery; admins see it in the API server's webhook metrics. This is the same choice a consumer makes for resolve failures (`soft` or `strict`), extended to injection.
+
+Injection is not part of the guard. A missing or broken injector stops delivery, and the guard is about who receives secrets. The resolve checks are the same whether the init container came from the injector or was hand-built by a trusted creator.
+
 ### What the Kubernetes team is asked to review
 
 The cluster-scoped objects ship apart from the Helm chart, in `cluster/` with a `REVIEW.md`. Under the proposed ADR-0022, NIC applies them as part of the foundational install, after the chart (which creates the ConfigMap they read); teams that review cluster-scoped objects separately review this directory.
@@ -205,10 +234,11 @@ The cluster-scoped objects ship apart from the Helm chart, in `cluster/` with a 
 |---|---|---|
 | Policy A + binding | Every pod create and update, every pod subresource write, every ServiceAccount token request (`failurePolicy: Fail`) | Requests carrying or gaining user-secrets metadata; `user-secrets` tokens requested by anything but a kubelet; real pod creates by the service's account |
 | Policy B + binding | Labelled pod creates | Labelled pods from unregistered creators, namespaces or apps; all labelled pods while the ConfigMap is missing |
+| `MutatingWebhookConfiguration` `user-secrets-injector` (two entries) | Labelled pod creates only | Denies nothing itself. Labelled pods marked `strict` are refused while the service is unreachable (`failurePolicy: Fail`); other labelled pods start without secrets (`Ignore`) |
 | `ClusterRoleBinding` to `system:auth-delegator` | n/a | Lets the service create TokenReviews |
 | `ClusterRole` + binding, read-only | n/a | `get`, `list`, `watch` on the two policies and two bindings |
 
-Preconditions: Kubernetes 1.30 or later, and the NodeRestriction admission plugin. Rollout: bindings at `[Warn, Audit]` first to observe, then `[Deny]`; delivery starts for pods created after that.
+Preconditions: Kubernetes 1.30 or later, the NodeRestriction admission plugin, and NIC's `nebari-ca-issuer` and `nebari-trust-bundle` (nebari-infrastructure-core#787). Rollout: bindings at `[Warn, Audit]` first to observe, then `[Deny]`; delivery starts for pods created after that.
 
 ## Managing secrets
 
@@ -234,8 +264,30 @@ sequenceDiagram
 - **Acts only on the caller.** Every route works on the record for the token's `sub`. There is no way to name another user.
 - **Values are write-only.** A value goes in on create or rotate and never comes back out in any response.
 - **What the landing page gets.** The user's secrets with their bindings and per-app delivery status, the registered apps to bind to, usage against the limits, and the guard state so it can warn when delivery is stopped.
-- **Same TLS as resolve.** The landing nginx verifies the service against the CA the service publishes as a `user-secrets-ca` ConfigMap, the same mechanism consumer namespaces use. nginx reads the CA only at startup, so the CA is long-lived, and a replaced CA is published alongside the old one until the old one expires.
+- **Same TLS as resolve.** The landing nginx verifies the service against `nebari-trust-bundle`, which trust-manager projects into every namespace, and checks the service's in-cluster name. nginx reads the bundle only at startup; NIC's root CA keeps its key across renewals, so a loaded bundle keeps verifying.
 - **The landing page must not depend on the service.** It has to start and work normally when user-secrets is missing or not ready; only the secrets screens fail. This is a requirement on nebari-landing#236.
+
+## Storage and encryption
+
+Owner records stay in Kubernetes Secrets in the service namespace, one per user (`us-<sub>`), behind a `SecretStore` interface. Values inside them are encrypted by the service before they are written.
+
+```mermaid
+flowchart LR
+    kek[("Master key (KEK)<br/>Secret user-secrets-kek<br/>later: cloud KMS")]
+    subgraph rec["Owner record us-&lt;sub&gt;"]
+        dek["Per-user data key (DEK)<br/>wrapped by the KEK<br/>bound to the owner's sub"]
+        vals["Each value<br/>AES-256-GCM with the DEK<br/>bound to sub and secret name"]
+    end
+    kek -->|"wraps / unwraps"| dek
+    dek -->|"encrypts / decrypts"| vals
+```
+
+- **A key per user.** Each owner record carries its own random data key, stored only wrapped by the master key. Each value is sealed with AES-256-GCM under that data key, with the owner's `sub` and the secret's name as associated data, so a value or a wrapped key copied into another user's record fails to decrypt.
+- **Master key behind an interface.** The first release ships one implementation: a key held in the Kubernetes Secret `user-secrets-kek`, which the service generates on first start. Cloud KMS implementations (AWS KMS, Google Cloud KMS, Azure Key Vault) fit the same interface and are follow-up work; they would add a key that never enters the cluster and the cloud's own log of every unwrap.
+- **Rotation.** An admin command adds a new master key, rewraps every user's data key under it, and reports when no record still uses the old one, which can then be retired. Values do not need re-encrypting. A second command replaces users' data keys and re-encrypts their values, for when a data key itself may be exposed.
+- **Losing the master key loses every secret.** The service never generates a master key while any owner record exists; it refuses to deliver instead (`503 kek_unavailable`). Until Nebari backs up Kubernetes objects, admins back up `user-secrets-kek` themselves, separately from any copy of the records.
+- **Deleting a user destroys their values.** Deleting the owner record deletes the only copy of their data key.
+- **What it does not protect against.** A cluster admin, or anyone who can read Secrets in the service namespace, can read the master key with the records. That is the threat model above; a cloud KMS key narrows it to people who can also use that key.
 
 ## Delivery
 
@@ -244,7 +296,7 @@ flowchart LR
     subgraph pod["Workload pod"]
         init["user-secrets-init<br/>(runs first)"]
         tok[/"Projected token<br/>aud=user-secrets<br/>(init only)"/]
-        ca[/"user-secrets-ca<br/>ConfigMap"/]
+        ca[/"nebari-trust-bundle<br/>ConfigMap"/]
         mem[("emptyDir, memory, 1 MiB<br/>/var/run/nebari/secrets")]
         bin[("emptyDir<br/>/var/run/nebari/user-secrets-bin")]
         main["Main container<br/>(read-only mounts)"]
@@ -258,10 +310,11 @@ flowchart LR
 ```
 
 - **Files, not environment variables, are the contract.** One file per secret, exact bytes, mode `0440`, group-readable through the pod's `fsGroup`. A memory volume dies with the pod, so values never reach etcd beyond the owner record and nothing needs cleaning up.
-- **Environment variables are optional.** A pack prepends `user-secrets-env` to its container's arguments; it exports each file as a variable and executes the real command.
+- **Environment variables are optional.** A pack sets the annotation `nebari.dev/user-secrets-export-env: "true"`, and the injector prepends `user-secrets-env` to the workload container's arguments; it exports each file as a variable and executes the real command. An init container cannot set another container's environment, so the wrapper is the only way to get variables without putting values in the pod spec.
 - **Names are always `NEBARI_SECRET_<SUFFIX>`.** A user-chosen variable name such as `LD_PRELOAD` or `PYTHONSTARTUP` could turn a secret into code execution, and no denylist is complete; a fixed prefix closes the class.
-- **Failures are visible.** `.status` in the pod, a stderr warning from the wrapper, and the last delivery per app on the landing page, through the management API. Consumers choose `soft` (start without secrets, the default) or `strict` (block the pod).
-- **Transport.** In-cluster TLS. cert-manager issues a self-signed CA inside the service namespace; each consumer chart creates an empty `user-secrets-ca` ConfigMap that the service fills.
+- **Failures are visible.** `.status` in the pod, a stderr warning from the wrapper, and the last delivery per app on the landing page, through the management API. Consumers choose `soft` (start without secrets, the default) or `strict` (block the pod, set with the label `nebari.dev/user-secrets-failure: strict`), which covers both injection and resolve.
+- **Transport.** In-cluster TLS. The serving certificate comes from NIC's `nebari-ca-issuer`; the init container verifies it against `nebari-trust-bundle` and the service's in-cluster name. Nothing is published into consumer namespaces.
+- **Added by the injector.** The init container, the token, the trust-bundle mount, both volumes and the main container's mounts in this diagram are all added by the webhook at pod creation.
 
 ## Consumer contract
 
@@ -269,17 +322,16 @@ Any pack that wants a user's secrets in its workloads:
 
 1. Opts in (`userSecrets.enabled: false` by default; when off, its rendered chart and pods are unchanged, checked against golden files).
 2. Registers its app, workload ServiceAccount and creator in nebari-user-secrets's values; the service and the cluster bundle do not change.
-3. Uses the single-file, standard-library-only Python helper, vendored into its chart, to build pod settings, and applies them at the last point before pod creation.
-4. Runs workload pods as the registered ServiceAccount (an existing one is kept, not replaced).
-5. Labels and annotates each pod, taking the user's `sub` only from a source it authenticated itself.
-6. Never lets user input choose the ServiceAccount, labels, annotations, init containers, volumes or command wrapper.
-7. Adds the init container, the two volumes, the projected token, the CA ConfigMap and an `fsGroup`.
-8. Allows egress to the service.
-9. Never copies values anywhere else: no environment literals in pod specs, no Kubernetes Secrets, no custom resource fields, no logs.
-10. Chooses a failure mode.
-11. Never delivers to code the user did not choose to run.
+3. Runs workload pods as the registered ServiceAccount (an existing one is kept, not replaced).
+4. Sets, at the last point before pod creation, the label `nebari.dev/user-secrets: "true"` and the annotations `nebari.dev/user-secrets-sub` and `nebari.dev/user-secrets-app`, taking the user's `sub` only from a source it authenticated itself. Optionally it sets `nebari.dev/user-secrets-export-env`, `nebari.dev/user-secrets-containers` and the `nebari.dev/user-secrets-failure` label.
+5. Leaves the delivery pieces to the injector, and keeps the workload container first or names it.
+6. Never lets user input choose the ServiceAccount, labels or annotations.
+7. Allows egress to the service.
+8. Never copies values anywhere else: no environment literals in pod specs, no Kubernetes Secrets, no custom resource fields, no logs.
+9. Chooses a failure mode.
+10. Never delivers to code the user did not choose to run.
 
-**data-science-pack** applies the settings in a KubeSpawner `modify_pod_hook`, which runs after profile overrides and after jhub-apps sets its command, and adds a small hub endpoint that returns a token owner's `sub` for dask-gateway. **dask-gateway-pack** subclasses the JupyterHub authenticator to fetch the `sub`, and wraps the cluster options handler to add the settings to scheduler and worker pods.
+**data-science-pack** sets the label and annotations in a KubeSpawner `modify_pod_hook`, which runs after profile overrides and after jhub-apps sets its command, and adds a small hub endpoint that returns a token owner's `sub` for dask-gateway. **dask-gateway-pack** subclasses the JupyterHub authenticator to fetch the `sub`, and wraps the cluster options handler to set them on scheduler and worker pods. Neither vendors code from this repo.
 
 ## Alternatives considered
 
@@ -290,7 +342,13 @@ Any pack that wants a user's secrets in its workloads:
 | Per-user namespaces as an option | Rejected for now | Doubles the test matrix; each consumer would need a namespace-per-user mode |
 | Keycloak token in the pod | Rejected | Access tokens expire; a refresh token in a user pod is too powerful |
 | Pull from inside the pod with the user's hub token | Rejected | Any code or sharee in the pod could fetch everything; Dask workers have no hub token; ties the service to JupyterHub |
-| Mutating webhook that sets environment variables | Rejected | Values land in pod specs readable by the `view` role; an unavailable webhook blocks pod creation |
+| Mutating webhook that sets environment variables | Rejected | Values land in pod specs readable by the `view` role. The injector chosen instead adds only delivery pieces, never values |
+| A Python helper vendored into each consumer chart | Replaced by the injector | Every pack would carry a pinned copy, a sync check and the init image digest, and a pack in another language would need a port. The injector does it once, at the last point before the policies run |
+| Values in plain Kubernetes Secrets (relying on etcd encryption) | Replaced | Any copy of the records, such as a backup or export, would hold readable values, and a deleted user's values could only be removed, not destroyed |
+| One master key with no per-user keys | Rejected | Per-user keys let a deleted user's values be destroyed and stop a value moved between records from decrypting |
+| A database (Postgres through CloudNativePG) instead of Kubernetes Secrets | Not now | Richer audit queries and simpler backups, but a second stateful component to run and back up. The store sits behind an interface and can move later |
+| A cloud secrets manager as the store | Not now | Each cloud and local clusters need their own implementation. Putting the master key in a cloud KMS gets the useful part (a key outside the cluster, the cloud's audit log) through one interface |
+| A CA private to the service, published into each consumer namespace | Replaced | The service wrote a ConfigMap into every consumer namespace, and how to keep Argo CD from reverting it was unsolved. NIC's cluster CA and trust bundle remove that, at the cost stated in the threat model |
 | Vault or External Secrets Operator | Rejected | Identity keyed on ServiceAccount or namespace brings back per-user ServiceAccounts; External Secrets creates per-workload Secrets |
 | Secrets Store CSI driver | Rejected | Same ServiceAccount-keyed identity |
 | Extending Javo's secret store | Not chosen | The hard part is pod identity and delivery, which is the same whichever store holds records; Javo can become a consumer |
@@ -307,10 +365,10 @@ The admission policies have a case matrix (`test/policy/run.sh`) that runs again
 
 ## Open questions
 
-1. How Argo CD is kept from reverting the service-filled data of each consumer's and the landing page's `user-secrets-ca` ConfigMap under NIC's Argo CD settings.
+1. That nebari-infrastructure-core#787 merges before this ships, and the upgrade path for clusters created before it.
 2. The pod-manifest golden-file harnesses for data-science-pack and dask-gateway-pack, which neither repo has today.
 3. `fsGroup` behaviour of `emptyDir` volumes with the init container's user, and the built binary's size.
-4. That cert-manager's namespaced CA chain works at NIC's pinned cert-manager version.
+4. That the injector's patch passes Pod Security `restricted` and survives reinvocation alongside the other mutating webhooks on a NIC cluster, and which source the service's NetworkPolicy must admit for API server calls to the webhook port.
 5. How NIC passes matching values to the user-secrets and landing charts (landing namespace, frontend pod selector, SPA client id, service address), and the Argo CD sync order between them.
 6. Smaller verifications listed in the detailed spec (jhub-apps spawner detection, the `azp` of landing page tokens, custom-scope enforcement, dask-gateway option fields).
 
@@ -321,5 +379,7 @@ The admission policies have a case matrix (`test/policy/run.sh`) that runs again
 - Service (bot) accounts for background workloads.
 - Live refresh of running pods with the same pod-bound token.
 - Narrowing what a shared server exposes to sharees.
-- Application-level encryption of stored values.
-- A signed-assertion fallback and a Go helper, if needed.
+- Cloud KMS master keys (AWS KMS, Google Cloud KMS, Azure Key Vault).
+- Backups of owner records, with the master key kept apart from them.
+- Asking the user before an app gets a secret it has not been granted, instead of only on/off bindings.
+- A signed-assertion fallback, if needed.
