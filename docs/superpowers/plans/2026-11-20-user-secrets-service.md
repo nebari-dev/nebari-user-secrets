@@ -303,6 +303,18 @@ Task reviews: Task 3 clean. Task 4 approved, 1 fix round (Create NotFound not a 
 - [ ] **Step 1: Failing tests** (`httptest`, fake verifier and fake store): `TestRoutes` table covering every route, method and error code in the spec (`401 invalid_token`, `400 invalid_name|invalid_suffix|unknown_app|grants_not_supported|limit_exceeded`, `404 not_found`, `409 env_conflict`, `503 kubernetes_unavailable|kek_unavailable`); `TestValueNeverReturned` (journey 2: upload `"zq-unique-value-91"`, then every route and every error response body contains neither it nor its base64); `TestOnlyCallersRecord` (verifier returns sub A; no path or query parameter can address B); `TestCookieIgnored` (a session cookie without `Authorization` → 401); `TestRequestBodyLimit` (body over 64 KiB → 413).
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement** with `http.ServeMux` patterns (`GET /api/v1/secrets`, `PUT /api/v1/secrets/{name}`, ...), `http.MaxBytesReader`. **Step 4: Run**: PASS. Add the management API entry to `docs/architecture/contracts.md`.
 
+**Evidence (2026-11-20, Go 1.26.11 toolchain):**
+```
+$ go test ./... -race -cover
+ok internal/auth 100.0%   ok internal/httpapi 97.5%   ok internal/registry 98.6%   ok internal/service 89.1%
+ok internal/admin 81.5%   ok internal/audit 100.0%    ok internal/crypto 91.2%     ok internal/model 100.0%   ok internal/store 84.1%
+(TestValueNeverReturned, TestBindings, TestEnvNameAlwaysPrefixed, TestVerifyAfterKeyRotation, TestLimitCountsEncodedSize,
+ TestConcurrentUpsertsBothPersist, TestFirstWritesRaceForNewOwner all PASS)
+$ golangci-lint run ; golangci-lint run --build-tags integration -> 0 issues. ; 0 issues.
+$ go vet ./... ; go vet -tags integration ./... -> clean
+```
+Task reviews: Task 7 clean. Task 8 approved; hardened (empty issuer entries refused, fail-closed rows pinned, misconfiguration rows proven to bite by mutation). Task 9 approved; wire code fixed to invalid_suffix, deterministic first-write race test added. Task 10 approved; strict trailing-data check, empty value refused, panic recovery that logs only the type, Allow on 405, log and header leak assertions.
+
 **Checkpoint (controller, after the last task; implementers ignore):** run validation, paste evidence, open PR(s), STOP for go-ahead.
 
 ---
