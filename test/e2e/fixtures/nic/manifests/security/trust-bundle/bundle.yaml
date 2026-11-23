@@ -1,0 +1,39 @@
+# trust.cert-manager.io/v1alpha1 is an alpha API and may change across
+# trust-manager minor versions. It is safe while the chart is pinned (see the
+# pinned version in apps/trust-manager.yaml); revisit this manifest whenever that
+# pin is bumped.
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: nebari-trust-bundle
+  labels:
+    app.kubernetes.io/part-of: nebari-foundational
+    app.kubernetes.io/managed-by: nebari-infrastructure-core
+spec:
+  sources:
+    # The projected file must include the system roots, not only our CAs:
+    # consumers point SSL_CERT_FILE / REQUESTS_CA_BUNDLE / NODE_EXTRA_CA_CERTS
+    # at it, and those REPLACE the default pool rather than extend it. A file
+    # without them breaks TLS to anything allow-listed past the proxy or
+    # publicly signed (e.g. pip install from PyPI). useDefaultCAs pulls in
+    # trust-manager's default CA package (public roots), which
+    # apps/trust-manager.yaml explicitly enables.
+    - useDefaultCAs: true
+    # The cluster's root CA, which signs the gateway and per-app certificates
+    # on certificate.type=selfsigned and packs' internal certificates on every
+    # type, so pods trust the platform's own hostnames.
+    # cert-manager keeps it in the trust namespace, where trust-manager reads it.
+    - secret:
+        name: {{ .RootCASecretName }}
+        key: ca.crt
+{{- if .TrustBundlePEM }}
+    # The org CA from the top-level trust_bundle.
+    - inLine: |-
+{{ indent 8 .TrustBundlePEM }}
+{{- end }}
+  target:
+    configMap:
+      key: ca-certificates.crt
+    # Empty selector projects the bundle ConfigMap into every namespace,
+    # covering foundational and software-pack namespaces alike.
+    namespaceSelector: {}

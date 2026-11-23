@@ -17,4 +17,34 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.4.0
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.2
       - run: make test
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.2
+      - name: Install kind
+        run: go install sigs.k8s.io/kind@v0.33.0
+      - name: Build the image and bring up us-e2e
+        run: make e2e-up
+      - name: E2E tests
+        run: make e2e-test
+      - name: Dump cluster state on failure
+        if: failure()
+        env:
+          KUBECONFIG: .kube/e2e
+        # Pods, events and service logs only; never Secrets.
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true
+          kubectl -n us-system logs -l app.kubernetes.io/name=user-secrets --all-containers --prefix --tail=200 || true

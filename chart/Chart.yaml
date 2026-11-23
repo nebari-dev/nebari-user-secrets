@@ -1,0 +1,7 @@
+apiVersion: v2
+name: user-secrets
+description: Per-user secrets service for Nebari (cluster-internal; no external exposure).
+type: application
+version: 0.1.0
+appVersion: "dev"
+kubeVersion: ">=1.30.0-0"

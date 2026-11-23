@@ -1,0 +1,17 @@
+# Serving certificate from NIC's cluster CA. The root CA permits only DNS names
+# under .svc and .svc.cluster.local and excludes every IP address.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: user-secrets-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "user-secrets.labels" . | nindent 4 }}
+spec:
+  secretName: user-secrets-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: nebari-ca-issuer
+  dnsNames:
+    - user-secrets.{{ .Release.Namespace }}.svc
+    - user-secrets.{{ .Release.Namespace }}.svc.cluster.local

@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "user-secrets.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "user-secrets.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "user-secrets.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "user-secrets.config" . | sha256sum }}
+    spec:
+      serviceAccountName: user-secrets
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "user-secrets.selectorLabels" . | nindent 20 }}
+      containers:
+        - name: user-secrets
+          image: {{ .Values.image | quote }}
+          args: [serve, --config, /etc/user-secrets/config.yaml]
+          env:
+            - name: OTEL_EXPORTER
+              value: none
+            # Verifies an https keycloak.jwksURL against the cluster CA bundle.
+            - name: SSL_CERT_FILE
+              value: /etc/nebari/trust/ca-certificates.crt
+          ports:
+            - name: management
+              containerPort: 8444
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/user-secrets
+              readOnly: true
+            # A directory mount, not subPath, so cert renewals reach the pod.
+            - name: tls
+              mountPath: /etc/nebari/tls
+              readOnly: true
+            - name: trust
+              mountPath: /etc/nebari/trust
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: user-secrets-config
+        - name: tls
+          secret:
+            secretName: user-secrets-tls
+        - name: trust
+          configMap:
+            name: nebari-trust-bundle

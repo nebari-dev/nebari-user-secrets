@@ -1,0 +1,50 @@
+# Container image for the service. initImage is the image injected into
+# workload pods as the init container; it defaults to the same image.
+image: ghcr.io/nebari-dev/nebari-user-secrets:dev
+initImage: ""
+
+# Two replicas behind a PodDisruptionBudget (minAvailable 1).
+replicas: 2
+
+# Apps that may receive secrets and the identities allowed to act for them.
+# Same shape as the Go registry.Config:
+#   apps:     [{id, workloads: [{namespace, serviceAccount}]}]
+#   creators: [{username: system:serviceaccount:<ns>:<name>, namespaces: [..], apps: [..]}]
+# creators is also rendered into the ConfigMap user-secrets-creators, which the
+# cluster admission policy reads.
+registry:
+  apps: []
+  creators: []
+
+# REQUIRED. Realm whose access tokens the management API accepts. clientID is
+# the landing page SPA's client id (the token's azp); a wrong value gives 401 on
+# every management call, so there is no default. NIC passes the real values.
+keycloak:
+  jwksURL: ""
+  issuers: []
+  clientID: ""
+
+# REQUIRED. The only clients admitted to the management port (8444): pods
+# matching podSelector in namespace. NIC passes the real values.
+landing:
+  namespace: ""
+  podSelector: {}
+
+guard:
+  # enforced (default) or unverified.
+  mode: enforced
+  # Allows the service namespace to also hold registered workloads or creators.
+  # Valid only with mode: unverified. Every principal that can create pods in
+  # this namespace is then trusted with every user's secrets.
+  allowSharedNamespace: false
+
+# Optional overrides of the built-in limits (0 or unset keeps the default):
+# MaxSecrets (50), MaxValueBytes (32768), MaxRecordBytes (524288).
+limits: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

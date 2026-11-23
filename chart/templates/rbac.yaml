@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: user-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "user-secrets.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: user-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "user-secrets.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: user-secrets
+subjects:
+  - kind: ServiceAccount
+    name: user-secrets
+    namespace: {{ .Release.Namespace }}

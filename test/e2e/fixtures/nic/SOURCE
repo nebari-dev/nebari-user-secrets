@@ -1,0 +1,13 @@
+repo: https://github.com/nebari-dev/nebari-infrastructure-core
+commit: de81b1131fbe26fca289f841347d84af727f692f (nebari-infrastructure-core#787, "feat(certificates): run the internal CA on every certificate type")
+base: pkg/argocd/templates/
+files (byte-for-byte copies; path below this directory = path below base):
+  manifests/security/issuers/selfsigned-clusterissuer.yaml
+  manifests/security/issuers/root-ca-certificate.yaml
+  manifests/security/issuers/ca-clusterissuer.yaml
+  manifests/security/trust-bundle/bundle.yaml
+  values/cert-manager/base.yaml
+  values/trust-manager/base.yaml
+chart versions pinned by NIC at this commit (pkg/argocd/templates/apps/*.yaml):
+  cert-manager v1.17.2, trust-manager v0.22.1 (https://charts.jetstack.io)
+drift check: make nic-fixtures-check [NIC_REF=<ref>]

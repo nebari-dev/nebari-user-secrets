@@ -1,0 +1,16 @@
+# Name and namespace are fixed: a ValidatingAdmissionPolicyBinding paramRef in
+# cluster/policies.yaml points here. Encoding matches
+# registry.CreatorsConfigMapData: key "<ns>.<sa>", value
+# "namespaces=<a,b>;apps=<x,y>" with both lists sorted.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-secrets-creators
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "user-secrets.labels" . | nindent 4 }}
+data:
+  {{- range .Values.registry.creators | default list }}
+  {{- $parts := splitList ":" .username }}
+  {{ printf "%s.%s" (index $parts 2) (index $parts 3) | quote }}: {{ printf "namespaces=%s;apps=%s" (.namespaces | sortAlpha | join ",") (.apps | sortAlpha | join ",") | quote }}
+  {{- end }}

@@ -1,0 +1,17 @@
+.git
+.github
+.superpowers
+.claude
+.kube
+bin
+docs
+test
+hack
+cluster
+*.md
+CLAUDE.md
+coverage.out
+*.swp
+.DS_Store
+.idea
+.vscode

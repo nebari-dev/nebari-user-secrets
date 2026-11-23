@@ -1,6 +1,9 @@
 version: "2"
 run:
   allow-parallel-runners: true
+  # Lint the e2e harness (test/e2e) too.
+  build-tags:
+    - e2e
 linters:
   default: none
   enable:

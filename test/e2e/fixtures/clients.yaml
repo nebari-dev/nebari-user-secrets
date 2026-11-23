@@ -1,0 +1,41 @@
+# Test clients. landing-proxy carries the landing frontend labels the chart's
+# NetworkPolicy admits to 8444 and forwards its own :8444 to the service, so
+# the tests reach the management API through an admitted pod. workload-client
+# sits in a registered workload namespace, which must not reach 8444.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nebari-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-workload
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: landing-proxy
+  namespace: nebari-system
+  labels:
+    app.kubernetes.io/name: nebari-landing
+spec:
+  containers:
+    - name: socat
+      image: alpine/socat:1.8.1.1
+      args:
+        - TCP-LISTEN:8444,fork,reuseaddr
+        - TCP:user-secrets.us-system.svc:8444
+      ports:
+        - containerPort: 8444
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: workload-client
+  namespace: e2e-workload
+spec:
+  containers:
+    - name: socat
+      image: alpine/socat:1.8.1.1
+      command: ["sleep", "infinity"]
