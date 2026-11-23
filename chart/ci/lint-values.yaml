@@ -1,0 +1,29 @@
+registry:
+  apps:
+    - id: jupyter
+      workloads:
+        - namespace: jupyterhub
+          serviceAccount: user-pod
+        - namespace: jupyterhub
+          serviceAccount: other-pod
+    - id: dask
+      workloads:
+        - namespace: dask-gateway
+          serviceAccount: dask-worker
+  creators:
+    - username: system:serviceaccount:jupyterhub:hub
+      namespaces: [jupyterhub, jupyter-users]
+      apps: [jupyter, dask]
+    - username: system:serviceaccount:dask-gateway:controller
+      namespaces: [dask-gateway]
+      apps: [dask]
+keycloak:
+  jwksURL: https://keycloak.example.svc/realms/nebari/protocol/openid-connect/certs
+  issuers:
+    - https://keycloak.example.com/realms/nebari
+    - https://keycloak.example.svc/realms/nebari
+  clientID: landing-spa
+landing:
+  namespace: nebari-system
+  podSelector:
+    app.kubernetes.io/name: nebari-landing

@@ -1,0 +1,39 @@
+{{- /* Render-time guardrails; this template emits no manifest. */ -}}
+{{- $ns := .Release.Namespace -}}
+{{- $shared := list -}}
+{{- range .Values.registry.apps | default list -}}
+  {{- range .workloads | default list -}}
+    {{- if eq .namespace $ns -}}{{- $shared = append $shared (printf "workload namespace %s" .namespace) -}}{{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- range .Values.registry.creators | default list -}}
+  {{- $parts := splitList ":" .username -}}
+  {{- if or (ne (len $parts) 4) (ne (index $parts 0) "system") (ne (index $parts 1) "serviceaccount") (eq (index $parts 2) "") (eq (index $parts 3) "") -}}
+    {{- fail (printf "registry.creators username %q must be exactly system:serviceaccount:<namespace>:<name>" .username) -}}
+  {{- end -}}
+  {{- if and (eq (len $parts) 4) (eq (index $parts 2) $ns) -}}{{- $shared = append $shared (printf "creator ServiceAccount namespace %s" $ns) -}}{{- end -}}
+  {{- range .namespaces | default list -}}
+    {{- if eq . $ns -}}{{- $shared = append $shared (printf "creator namespace %s" .) -}}{{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if and $shared (not .Values.guard.allowSharedNamespace) -}}
+  {{- fail (printf "the service namespace %q is also a registered %s; the service must run in its own namespace unless guard.allowSharedNamespace is true (only with guard.mode: unverified; every principal that can create pods there is trusted with every user's secrets)" $ns (index $shared 0)) -}}
+{{- end -}}
+{{- if and .Values.guard.allowSharedNamespace (ne .Values.guard.mode "unverified") -}}
+  {{- fail "guard.allowSharedNamespace is only valid together with guard.mode: unverified" -}}
+{{- end -}}
+{{- if not .Values.keycloak.clientID -}}
+  {{- fail "keycloak.clientID is required: it is the landing SPA client id; a wrong value gives 401 on every management call" -}}
+{{- end -}}
+{{- if not .Values.keycloak.jwksURL -}}
+  {{- fail "keycloak.jwksURL is required" -}}
+{{- end -}}
+{{- if not .Values.keycloak.issuers -}}
+  {{- fail "keycloak.issuers needs at least one entry" -}}
+{{- end -}}
+{{- if not .Values.landing.namespace -}}
+  {{- fail "landing.namespace is required: it is the only namespace admitted to the management port" -}}
+{{- end -}}
+{{- if not .Values.landing.podSelector -}}
+  {{- fail "landing.podSelector is required: an empty selector would admit every pod in the landing namespace" -}}
+{{- end -}}

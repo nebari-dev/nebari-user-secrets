@@ -1,0 +1,18 @@
+# Chart values for the e2e release in namespace us-system. image is set by
+# setup.sh from $IMG.
+registry:
+  apps:
+    - id: jupyter
+      workloads:
+        - namespace: e2e-workload
+          serviceAccount: default
+  creators: []
+keycloak:
+  jwksURL: https://jwks.e2e-keycloak.svc/jwks.json
+  issuers:
+    - https://keycloak.nebari.local/realms/nebari
+  clientID: nebari-landing
+landing:
+  namespace: nebari-system
+  podSelector:
+    app.kubernetes.io/name: nebari-landing

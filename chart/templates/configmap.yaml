@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-secrets-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "user-secrets.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "user-secrets.config" . | nindent 4 }}

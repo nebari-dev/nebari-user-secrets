@@ -8,7 +8,7 @@
 | **Deployed by** | NIC, as foundational software (ADR-0022, proposed in [nebari-dev/nebari-infrastructure-core#764](https://github.com/nebari-dev/nebari-infrastructure-core/pull/764)) |
 | **Reference consumers** | `nebari-dev/data-science-pack` (JupyterHub, jhub-apps), `nebari-dev/dask-gateway-pack` (Dask) |
 | **Secrets screens** | The Nebari landing page, through this service's management API ([nebari-dev/nebari-landing#236](https://github.com/nebari-dev/nebari-landing/issues/236)) |
-| **Requires** | NIC's always-on cluster CA and trust bundle (`nebari-ca-issuer`, `nebari-trust-bundle`), proposed in [nebari-dev/nebari-infrastructure-core#787](https://github.com/nebari-dev/nebari-infrastructure-core/pull/787) (stacked on #776) |
+| **Requires** | NIC's always-on cluster CA and trust bundle (`nebari-ca-issuer`, `nebari-trust-bundle`), from [nebari-dev/nebari-infrastructure-core#787](https://github.com/nebari-dev/nebari-infrastructure-core/pull/787) (merged 2026-11-23, on top of #776) |
 | **Supersedes** | `nebari-dev/external-auth-pack` (experimental) |
 | **Detailed spec** | [`docs/design/user-secrets-spec.md`](user-secrets-spec.md) (types, signatures, layout, test seams, journeys) |
 
@@ -365,7 +365,7 @@ The admission policies have a case matrix (`test/policy/run.sh`) that runs again
 
 ## Open questions
 
-1. That nebari-infrastructure-core#787 merges before this ships, and the upgrade path for clusters created before it.
+1. The upgrade path for clusters created before nebari-infrastructure-core#787 (merged 2026-11-23). A `selfsigned` cluster created between #776 and #787 has a root CA that cannot vouch for in-cluster Service names and needs it reissued before this service is installed.
 2. The pod-manifest golden-file harnesses for data-science-pack and dask-gateway-pack, which neither repo has today.
 3. `fsGroup` behaviour of `emptyDir` volumes with the init container's user, and the built binary's size.
 4. That the injector's patch passes Pod Security `restricted` and survives reinvocation alongside the other mutating webhooks on a NIC cluster, and which source the service's NetworkPolicy must admit for API server calls to the webhook port.
