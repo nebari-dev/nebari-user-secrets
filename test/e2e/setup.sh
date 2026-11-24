@@ -120,11 +120,13 @@ install_jwks() {
   kubectl -n e2e-keycloak rollout status deployment/jwks --timeout=180s
 }
 
-# install_consumer creates the test-consumer namespace and its ServiceAccounts
-# before the chart, which renders a pod-reader Role into every registered
-# workload namespace.
+# install_consumer creates the registered workload namespaces (e2e-workload,
+# whose pods come from clients.yaml later, and test-consumer with its
+# ServiceAccounts) before the chart, which renders a pod-reader Role into every
+# registered workload namespace.
 install_consumer() {
-  log "creating the test-consumer namespace, workload and creator ServiceAccounts"
+  log "creating the e2e-workload and test-consumer namespaces, workload and creator ServiceAccounts"
+  kubectl create namespace e2e-workload --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl apply -f "$FIXTURES/consumer.yaml"
 }
 
