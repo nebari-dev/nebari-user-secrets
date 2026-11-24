@@ -73,7 +73,7 @@ spec:
     - expression: >-
         !(request.resource.resource == 'pods' && variables.sub == 'binding') ||
         ((!has(object.metadata.annotations) || !object.metadata.annotations.exists(k, k.startsWith('nebari.dev/user-secrets'))) &&
-         (!has(object.metadata.labels) || !object.metadata.labels.exists(k, k.startsWith('nebari.dev/user-secrets'))))
+        (!has(object.metadata.labels) || !object.metadata.labels.exists(k, k.startsWith('nebari.dev/user-secrets'))))
       message: "user-secrets: bindings may not carry user-secrets metadata"
     - expression: >-
         !(request.resource.resource == 'serviceaccounts' && variables.sub == 'token') ||

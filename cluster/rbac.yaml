@@ -1,0 +1,41 @@
+# The service's cluster-scoped permissions. The subject namespace is substituted
+# by kustomize (replacements from user-secrets-install), like the policies'.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: user-secrets-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: user-secrets
+    namespace: us-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: user-secrets-guard-reader
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies"]
+    resourceNames: ["user-secrets-pod-guard", "user-secrets-creators"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicybindings"]
+    resourceNames: ["user-secrets-pod-guard", "user-secrets-creators"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: user-secrets-guard-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: user-secrets-guard-reader
+subjects:
+  - kind: ServiceAccount
+    name: user-secrets
+    namespace: us-system

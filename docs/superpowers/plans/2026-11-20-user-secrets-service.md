@@ -420,6 +420,31 @@ Task reviews: Task 11 approved after round 1 (own JWKS key set because go-oidc v
 | policy | `make policy-test` | every version `RESULT: <n> passed, 0 failed`; transcripts updated in `test/policy/results/` |
 | e2e | `go test -tags e2e ./test/e2e/... -run TestGuard -v` | pass (`TestGuardFailClosed`, `TestGuardVerifiedSinceMoves`) |
 
+**Evidence (2026-11-23, Go 1.26.11 toolchain, kind us-e2e on kindest/node:v1.34.3, Calico v3.32.3, NIC templates at `de81b11`):**
+```
+$ go test ./... -race -cover
+ok cmd/user-secrets 40.9%   ok internal/guard 94.2%     ok internal/httpapi 97.5%   ok internal/auth 96.0%
+ok internal/config 87.9%    ok internal/crypto 91.2%    ok internal/store 84.1%     ok internal/service 89.1%
+ok internal/registry 98.6%  ok internal/admin 81.5%     ok internal/audit 100.0%    ok internal/model 100.0%
+ok internal/telemetry 91.3% ok cmd/user-secrets-init 66.7%                           ok test/chart
+  internal/guard TestCompare covers every confirmed-bad case of journey 12 (binding removed, [Warn], [Audit],
+  [Warn, Audit], binding B narrowed or paramRef changed, paramRef added to binding A, policy edited, ConfigMap
+  drift or missing); TestGuard covers probe admitted, canary denied, API error and Pod Security as unknown
+  (119 s allowed, 120 s denied), verifiedSince moves, override mode
+$ make policy-test
+RESULT: 42 passed, 0 failed   (v1.30.13, v1.32.11, v1.34.3; transcripts in test/policy/results/)
+$ go test -tags e2e ./test/e2e/... -run TestGuard -v
+--- PASS: TestGuardFailClosed (4.67s)
+--- PASS: TestGuardVerifiedSinceMoves (3.11s)
+ok test/e2e
+$ make e2e-test   -> 9/9 PASS, incl. TestMissingConfigMapLeavesClusterWorking and the Slice 4 tests
+$ make image      -> exit 0 (amd64 + arm64; the binary embeds cluster/policies.yaml through .dockerignore)
+$ GOTOOLCHAIN=go1.26.11 make lint -> 0 issues;  helm lint chart -f chart/ci/lint-values.yaml -> 0 failed
+```
+Journeys: 12 partial. Every confirmed-bad cause is covered by the unit table, and on kind a binding switched to `[Warn]` reads `confirmed_bad` on every replica within 10 s, while restoring it reads `verified` in about 2 s and moves `verifiedSince` (API-server time + 30 s). The delivery half (no secret files, `.status` `error guard_not_verified`, `pod_predates_guard`) needs resolve and the init container, in Slices 6 and 7. 15 partial (service half): with `user-secrets-creators` deleted the guard reads `confirmed_bad` and an unlabelled pod in `default` creates; the missing-ConfigMap section of the policy matrix passes on all three versions. The dsp and dask-gateway-pack golden tests belong to those repos' plans.
+Found on the real cluster: the API server applies a binding change up to 1 s late (`generic/policy_source.go`), so the guard probes 2 s after the latest watch event and retries on a 2-30 s backoff while not verified. Spec "Guard verification" updated to match.
+Task reviews: Task 15 approved (Minor round; kustomize test found an over-indented line in `policies.yaml` that would have read as `confirmed_bad` on a correct install). Task 16 approved after round 1 (denial matched on the exact VAP status cause, checked at apiserver v0.30.0 and v0.35.0). Task 17 approved after 3 rounds (per-probe outcomes; persisted bad-seen marker cleared only by the replica that observed it; recheck under lock). Task 18 approved after the settle/backoff ruling and a Minor round.
+
 ### Task 15: Embedded expectation and reader RBAC
 
 **Files:** Create `cluster/embed.go`, `cluster/rbac.yaml`, `internal/guard/expect.go`, `internal/guard/expect_test.go`; Modify `cluster/kustomization.yaml`, `cluster/REVIEW.md`

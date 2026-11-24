@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -362,5 +363,54 @@ func TestConfigMapLoads(t *testing.T) {
 	}
 	if _, err := cfg.BuildRegistry(); err != nil {
 		t.Errorf("BuildRegistry: %v", err)
+	}
+}
+
+// TestRoleRules: the namespaced Role grants the secrets store its verbs and
+// the guard exactly what it needs, ConfigMap reads and updates by name.
+func TestRoleRules(t *testing.T) {
+	type rule struct {
+		APIGroups     []string `json:"apiGroups"`
+		Resources     []string `json:"resources"`
+		ResourceNames []string `json:"resourceNames"`
+		Verbs         []string `json:"verbs"`
+	}
+	var role struct {
+		Rules []rule `json:"rules"`
+	}
+	var found bool
+	for _, o := range render(t) {
+		if o.Kind == "Role" && o.Metadata.Name == "user-secrets" {
+			if err := sigsyaml.Unmarshal(o.Raw, &role); err != nil {
+				t.Fatal(err)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Role user-secrets not rendered")
+	}
+	want := []rule{
+		{APIGroups: []string{""}, Resources: []string{"secrets"},
+			Verbs: []string{"get", "list", "create", "update", "delete"}},
+		{APIGroups: []string{""}, Resources: []string{"configmaps"},
+			ResourceNames: []string{"user-secrets-creators", "user-secrets-guard-state"},
+			Verbs:         []string{"get", "list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"configmaps"},
+			ResourceNames: []string{"user-secrets-guard-state"}, Verbs: []string{"update"}},
+		{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}},
+	}
+	if len(role.Rules) != len(want) {
+		t.Fatalf("%d rules, want %d: %+v", len(role.Rules), len(want), role.Rules)
+	}
+	for i, w := range want {
+		t.Run(fmt.Sprintf("rule %d %v %v", i, w.Resources, w.Verbs), func(t *testing.T) {
+			g := role.Rules[i]
+			if !slices.Equal(g.APIGroups, w.APIGroups) || !slices.Equal(g.Resources, w.Resources) ||
+				!slices.Equal(g.ResourceNames, w.ResourceNames) || !slices.Equal(g.Verbs, w.Verbs) {
+				t.Errorf("got %+v, want %+v", g, w)
+			}
+		})
 	}
 }

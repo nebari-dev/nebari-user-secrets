@@ -1,7 +1,7 @@
 ### v1.34.3
 Creating cluster "us-vap-spike" ...
- • Ensuring node image (kindest/node:v1.34.3) 🖼  ...
- ✓ Ensuring node image (kindest/node:v1.34.3) 🖼
+ • Ensuring node image (kindest/node:v1.34.3) 🖼️  ...
+ ✓ Ensuring node image (kindest/node:v1.34.3) 🖼️
  • Preparing nodes 📦   ...
  ✓ Preparing nodes 📦 
  • Writing configuration 📜  ...
@@ -14,13 +14,13 @@ Creating cluster "us-vap-spike" ...
  ✓ Installing StorageClass 💾
  • Waiting ≤ 3m0s for control-plane = Ready ⏳  ...
  ✓ Waiting ≤ 3m0s for control-plane = Ready ⏳
- • Ready after 18s 💚
+ • Ready after 17s 💚
 Set kubectl context to "kind-us-vap-spike"
 You can now use your cluster with:
 
 kubectl cluster-info --context kind-us-vap-spike
 
-Thanks for using kind! 😊
+Have a question, bug, or feature request? Let us know! https://kind.sigs.k8s.io/#community 🙂
 Server Version: v1.34.3
 == setup
 == waiting for policies to take effect
@@ -53,7 +53,7 @@ PASS  admin mints a token for another audience
 PASS  pod with user-secrets projected token becomes Ready
 == TokenReview extras for a pod-bound token (open question 5)
       authenticated: True | user: system:serviceaccount:hub-ns:notebook-wl
-      extra: {"authentication.kubernetes.io/credential-id": ["JTI=9782b0e7-1eeb-45fb-8f80-a0f857728a3b"], "authentication.kubernetes.io/node-name": ["us-vap-spike-control-plane"], "authentication.kubernetes.io/node-uid": ["dccc6d2c-7a3f-4ad5-bdf9-9359595488b8"], "authentication.kubernetes.io/pod-name": ["nb-a"], "authentication.kubernetes.io/pod-uid": ["b8b7893d-1e9a-4cf9-9cce-3a7ab39403e8"]}
+      extra: {"authentication.kubernetes.io/credential-id": ["JTI=edb6ca3a-12d7-4b9c-8aba-044b99bee5da"], "authentication.kubernetes.io/node-name": ["us-vap-spike-control-plane"], "authentication.kubernetes.io/node-uid": ["21a51aad-ad6e-40ed-9a93-16a24a8268d4"], "authentication.kubernetes.io/pod-name": ["nb-a"], "authentication.kubernetes.io/pod-uid": ["4e233b28-8545-460b-ba68-81e6da39d4fc"]}
 PASS  TokenReview extra carries pod-name and pod-uid
 == service account: dry-run only, and the probe
 PASS  service SA creates a real pod
@@ -78,10 +78,10 @@ PASS  guard rules still active: user-secrets token by mallory
 PASS  hub creates labelled pod again after restore
 == Warn-only binding stops enforcement (guard must treat as bad), and the change is detectable
 PASS  with [Warn], mallory's labelled pod is admitted (real create)
-      binding before: rv/gen/uid 488 1 1dc8908e-2469-40e5-bb7e-db62223e634a; after Warn and back to Deny: 582 3 1dc8908e-2469-40e5-bb7e-db62223e634a
-      pod admitted under Warn created 2026-11-10T16:48:42Z; newest managedFields time on the binding 2026-11-10T16:48:29Z (not used: it does not advance on a value change)
+      binding before: rv/gen/uid 468 1 eb647535-7342-45d5-ad4a-2673613772cf; after Warn and back to Deny: 573 3 eb647535-7342-45d5-ad4a-2673613772cf
+      pod admitted under Warn created 2026-11-23T21:14:29Z; newest managedFields time on the binding 2026-11-23T21:14:21Z (not used: it does not advance on a value change)
 PASS  Warn-and-restore is detectable: resourceVersion changed and generation advanced by 2, uid unchanged
-      after delete and re-create: 587 1 40c28dd0-e750-4dca-84ae-ef4c03eea312
+      after delete and re-create: 579 1 8c699515-5404-437b-b60c-24dfa22232f2
 PASS  delete-and-recreate is detectable: uid changed
 
 RESULT: 42 passed, 0 failed

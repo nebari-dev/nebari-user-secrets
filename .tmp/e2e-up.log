@@ -1,0 +1,176 @@
+docker buildx build --load -t ghcr.io/nebari-dev/nebari-user-secrets:dev .
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.04kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26
+#2 ...
+
+#3 [internal] load metadata for gcr.io/distroless/static:nonroot
+#3 DONE 0.5s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26
+#2 DONE 0.7s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 352B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [builder 1/6] FROM docker.io/library/golang:1.26@sha256:4165ee6bf3b7811fd7b40373290405c83d0167dcb87ee5f29c427cdcef45ff8f
+#6 resolve docker.io/library/golang:1.26@sha256:4165ee6bf3b7811fd7b40373290405c83d0167dcb87ee5f29c427cdcef45ff8f 0.1s done
+#6 DONE 0.1s
+
+#7 [stage-1 1/4] FROM gcr.io/distroless/static:nonroot@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5
+#7 resolve gcr.io/distroless/static:nonroot@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5 0.1s done
+#7 DONE 0.1s
+
+#5 [internal] load build context
+#5 transferring context: 11.63kB done
+#5 DONE 0.0s
+
+#8 [builder 2/6] WORKDIR /workspace
+#8 CACHED
+
+#9 [builder 3/6] COPY go.mod go.sum ./
+#9 CACHED
+
+#10 [builder 4/6] RUN go mod download
+#10 CACHED
+
+#11 [builder 5/6] COPY . .
+#11 DONE 0.4s
+
+#12 [builder 6/6] RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64     go build -trimpath -o /out/user-secrets ./cmd/user-secrets &&     CGO_ENABLED=0 GOOS=linux GOARCH=amd64     go build -trimpath -o /out/user-secrets-init ./cmd/user-secrets-init
+#12 DONE 25.5s
+
+#13 [stage-1 2/4] COPY --from=builder /out/user-secrets /user-secrets
+#13 CACHED
+
+#14 [stage-1 3/4] COPY --from=builder /out/user-secrets-init /user-secrets-init
+#14 CACHED
+
+#15 exporting to image
+#15 exporting layers done
+#15 exporting manifest sha256:6a437e7b4a71e376dfe9a06161a1b53500bfa184509b29ebdf02e82779f689a5 done
+#15 exporting config sha256:d78905aff33a5f4575b006c3bfa153874a08f73ed83c877716af75b2c7f245b5 done
+#15 exporting attestation manifest sha256:da277b69060e16dddf7bf85bedc514f57262f9b29c61d0bc649ec538876f2fa1
+#15 exporting attestation manifest sha256:da277b69060e16dddf7bf85bedc514f57262f9b29c61d0bc649ec538876f2fa1 0.0s done
+#15 exporting manifest list sha256:065aba6ccfa306cb3c1275c5ca6fd58074357dd41d45f9658b1d20a203ce5312 0.0s done
+#15 naming to ghcr.io/nebari-dev/nebari-user-secrets:dev done
+#15 unpacking to ghcr.io/nebari-dev/nebari-user-secrets:dev 0.0s done
+#15 DONE 0.1s
+IMG=ghcr.io/nebari-dev/nebari-user-secrets:dev bash test/e2e/setup.sh up
+==> cluster us-e2e exists, exporting kubeconfig
+Set kubectl context to "kind-us-e2e"
+==> installing Calico v3.32.3
+daemon set "calico-node" successfully rolled out
+deployment "calico-kube-controllers" successfully rolled out
+node/us-e2e-control-plane condition met
+deployment "coredns" successfully rolled out
+==> installing Gateway API v1.6.1 CRDs
+==> installing cert-manager v1.17.2 and trust-manager v0.22.1 with NIC's values
+Release "cert-manager" has been upgraded. Happy Helming!
+NAME: cert-manager
+LAST DEPLOYED: Mon Nov 23 22:15:09 2026
+NAMESPACE: cert-manager
+STATUS: deployed
+REVISION: 9
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+NOTES:
+⚠️  WARNING: `installCRDs` is deprecated, use `crds.enabled` instead.
+cert-manager v1.17.2 has been deployed successfully!
+
+In order to begin issuing certificates, you will need to set up a ClusterIssuer
+or Issuer resource (for example, by creating a 'letsencrypt-staging' issuer).
+
+More information on the different types of issuers and how to configure them
+can be found in our documentation:
+
+https://cert-manager.io/docs/configuration/
+
+For information on how to configure cert-manager to automatically provision
+Certificates for Ingress resources, take a look at the `ingress-shim`
+documentation:
+
+https://cert-manager.io/docs/usage/ingress/
+Release "trust-manager" has been upgraded. Happy Helming!
+NAME: trust-manager
+LAST DEPLOYED: Mon Nov 23 22:15:11 2026
+NAMESPACE: cert-manager
+STATUS: deployed
+REVISION: 8
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+NOTES:
+⚠️  WARNING: Consider increasing the Helm value `replicaCount` to 2 if you require high availability.
+⚠️  WARNING: Consider setting the Helm value `podDisruptionBudget.enabled` to true if you require high availability.
+
+trust-manager v0.22.1 has been deployed successfully!
+Your installation includes a default CA package, using the following
+default CA package image:
+
+:
+
+It's imperative that you keep the default CA package image up to date.
+To find out more about securely running trust-manager and to get started
+with creating your first bundle, check out the documentation on the
+cert-manager website:
+
+https://cert-manager.io/docs/projects/trust-manager/
+==> applying NIC's cluster CA and trust bundle (letsencrypt rendering)
+clusterissuer.cert-manager.io/selfsigned-issuer unchanged
+certificate.cert-manager.io/nebari-root-ca unchanged
+clusterissuer.cert-manager.io/nebari-ca-issuer unchanged
+bundle.trust.cert-manager.io/nebari-trust-bundle unchanged
+certificate.cert-manager.io/nebari-root-ca condition met
+==> deploying the HTTPS JWKS server
+namespace/e2e-keycloak unchanged
+certificate.cert-manager.io/jwks-tls unchanged
+configmap/jwks-nginx unchanged
+deployment.apps/jwks unchanged
+service/jwks unchanged
+configmap/jwks-keys unchanged
+certificate.cert-manager.io/jwks-tls condition met
+deployment "jwks" successfully rolled out
+==> loading ghcr.io/nebari-dev/nebari-user-secrets:dev into us-e2e and installing the chart
+Image: "ghcr.io/nebari-dev/nebari-user-secrets:dev" with ID "sha256:065aba6ccfa306cb3c1275c5ca6fd58074357dd41d45f9658b1d20a203ce5312" not yet present on node "us-e2e-control-plane", loading...
+Release "user-secrets" has been upgraded. Happy Helming!
+NAME: user-secrets
+LAST DEPLOYED: Mon Nov 23 22:15:15 2026
+NAMESPACE: us-system
+STATUS: deployed
+REVISION: 24
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+==> applying the cluster bundle for namespace us-system
+clusterrole.rbac.authorization.k8s.io/user-secrets-guard-reader unchanged
+clusterrolebinding.rbac.authorization.k8s.io/user-secrets-auth-delegator unchanged
+clusterrolebinding.rbac.authorization.k8s.io/user-secrets-guard-reader unchanged
+validatingadmissionpolicy.admissionregistration.k8s.io/user-secrets-creators configured
+validatingadmissionpolicy.admissionregistration.k8s.io/user-secrets-pod-guard configured
+validatingadmissionpolicybinding.admissionregistration.k8s.io/user-secrets-creators unchanged
+validatingadmissionpolicybinding.admissionregistration.k8s.io/user-secrets-pod-guard unchanged
+deployment.apps/user-secrets restarted
+Waiting for deployment "user-secrets" rollout to finish: 0 out of 2 new replicas have been updated...
+Waiting for deployment "user-secrets" rollout to finish: 0 out of 2 new replicas have been updated...
+Waiting for deployment "user-secrets" rollout to finish: 0 out of 2 new replicas have been updated...
+Waiting for deployment "user-secrets" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "user-secrets" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "user-secrets" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "user-secrets" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "user-secrets" rollout to finish: 1 old replicas are pending termination...
+deployment "user-secrets" successfully rolled out
+==> starting the landing proxy and the workload client
+namespace/nebari-system configured
+namespace/e2e-workload unchanged
+pod/landing-proxy unchanged
+pod/workload-client unchanged
+pod/landing-proxy condition met
+pod/workload-client condition met
+==> ready: KUBECONFIG=/var/home/chuck/devel/nebari-user-secrets-impl/.kube/e2e
