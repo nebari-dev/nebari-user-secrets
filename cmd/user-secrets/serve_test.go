@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,11 +18,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/nebari-dev/nebari-user-secrets/internal/audit"
+	"github.com/nebari-dev/nebari-user-secrets/internal/config"
 	"github.com/nebari-dev/nebari-user-secrets/internal/crypto"
+	"github.com/nebari-dev/nebari-user-secrets/internal/guard"
+	"github.com/nebari-dev/nebari-user-secrets/internal/registry"
 )
 
 func discard() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }
@@ -217,4 +225,116 @@ func TestNewHTTPServerBounds(t *testing.T) {
 	if s.MaxHeaderBytes != 16<<10 {
 		t.Fatalf("MaxHeaderBytes = %d, want 16384", s.MaxHeaderBytes)
 	}
+}
+
+func TestNewGuard(t *testing.T) {
+	reg, err := registry.Load(strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name         string
+		mode         string
+		namespace    string
+		wantErr      bool
+		wantState    guard.GuardState
+		wantStarters int
+	}{
+		{name: "enforced builds watcher and store", mode: config.GuardEnforced, namespace: "us-system",
+			wantState:    guard.GuardState{State: guard.StateUnknown, Mode: guard.ModeEnforced, Reason: "not evaluated yet"},
+			wantStarters: 2},
+		{name: "unverified is overridden with nothing to start", mode: config.GuardUnverified, namespace: "us-system",
+			wantState: guard.GuardState{State: guard.StateOverridden, Mode: guard.ModeOverridden,
+				Reason: "guard.mode is unverified"}},
+		{name: "enforced rejects a bad namespace", mode: config.GuardEnforced, namespace: "Not_A_Label", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{Namespace: tt.namespace, Guard: config.Guard{Mode: tt.mode}}
+			g, starters, err := newGuard(cfg, fake.NewClientset(), reg, audit.NewSlogAuditSink(discard()))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("want an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := g.State(); got != tt.wantState {
+				t.Errorf("State() = %+v, want %+v", got, tt.wantState)
+			}
+			if len(starters) != tt.wantStarters {
+				t.Errorf("%d starters, want %d", len(starters), tt.wantStarters)
+			}
+		})
+	}
+}
+
+// countingEvaluator counts Evaluate calls and signals each one.
+type countingEvaluator struct {
+	calls atomic.Int32
+	done  chan struct{}
+}
+
+func (c *countingEvaluator) Evaluate(context.Context) guard.GuardState {
+	c.calls.Add(1)
+	c.done <- struct{}{}
+	return guard.GuardState{State: guard.StateOverridden, Mode: guard.ModeOverridden}
+}
+
+func TestRunOverridden(t *testing.T) {
+	tests := []struct {
+		name  string
+		ticks int
+	}{
+		{name: "checks and warns at start", ticks: 0},
+		{name: "checks and warns on every tick", ticks: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs syncBuffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			ev := &countingEvaluator{done: make(chan struct{})}
+			tick := make(chan time.Time)
+			ctx, cancel := context.WithCancel(context.Background())
+			finished := make(chan struct{})
+			go func() {
+				runOverridden(ctx, ev, tick, logger)
+				close(finished)
+			}()
+			<-ev.done
+			for range tt.ticks {
+				tick <- time.Now()
+				<-ev.done
+			}
+			cancel()
+			<-finished
+			want := tt.ticks + 1
+			if got := int(ev.calls.Load()); got != want {
+				t.Errorf("%d evaluations, want %d", got, want)
+			}
+			if got := strings.Count(logs.String(), `"level":"WARN","msg":"guard overridden`); got != want {
+				t.Errorf("%d warnings, want %d; logs:\n%s", got, want, logs.String())
+			}
+		})
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the logger goroutine and the test.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

@@ -4,12 +4,19 @@ This directory holds everything nebari-user-secrets needs at cluster scope. Unde
 
 ## Objects
 
+Everything below ships in this directory: both policies, both bindings (at `validationActions: [Deny]`), the `system:auth-delegator` binding and the guard-reader role and binding. The end-to-end harness applies it after the chart (`test/e2e/setup.sh`).
+
 | Object | Evaluated on | Designed to deny only |
 |---|---|---|
 | `ValidatingAdmissionPolicy` and binding `user-secrets-pod-guard` (policy A, no parameters) | Every pod create and update, every pod subresource write and every ServiceAccount token request in the cluster, with `failurePolicy: Fail` | Pods carrying or gaining the `nebari.dev/user-secrets` label or `nebari.dev/user-secrets-*` annotations in a way the rules forbid; Bindings carrying that metadata; `user-secrets` audience tokens requested by anything but a kubelet; real (non-dry-run) pod creates by the service's ServiceAccount |
 | `ValidatingAdmissionPolicy` and binding `user-secrets-creators` (policy B, parameters from the `user-secrets-creators` ConfigMap) | Creation of pods labelled `nebari.dev/user-secrets: "true"` | Labelled pods from a requester not registered for that namespace and app; every labelled pod while the ConfigMap is missing |
 
-The service also needs a `ClusterRoleBinding` to `system:auth-delegator` (TokenReview) and a read-only `ClusterRole` and binding on the two policies and two bindings. They belong in this directory too and will be added with the service, since they name its ServiceAccount.
+The service also needs cluster-scoped RBAC, in [`rbac.yaml`](rbac.yaml). Both bindings name the service's ServiceAccount (`user-secrets`) in the namespace set in `install-config.yaml`.
+
+| Object | Does | Can affect |
+|---|---|---|
+| `ClusterRoleBinding` `user-secrets-auth-delegator` to `system:auth-delegator` | lets the service create TokenReviews | the service's ServiceAccount only |
+| `ClusterRole` and `ClusterRoleBinding` `user-secrets-guard-reader` | `get`, `list`, `watch` on the two policies and two bindings, by `resourceNames` | read-only, four named objects |
 
 The same goes for the injector, a `MutatingWebhookConfiguration` named `user-secrets-injector` that names the service's `Service`:
 
@@ -30,7 +37,7 @@ Unrelated pods, scheduler bindings, kubelet status updates and kubelet token min
 
 ## Namespace
 
-The service namespace appears in policy B's binding (`paramRef.namespace`) and in policy A's `serviceAccount` variable. Set it once in `install-config.yaml`; the kustomization substitutes both. `install-config.yaml` is local to kustomize and is never applied.
+The service namespace appears in policy B's binding (`paramRef.namespace`), in policy A's `serviceAccount` variable and in the subjects of the two RBAC bindings. Set it once in `install-config.yaml`; the kustomization substitutes all of them. `install-config.yaml` is local to kustomize and is never applied.
 
 ```bash
 kubectl kustomize cluster/            # inspect the rendered objects
@@ -47,3 +54,11 @@ kubectl apply --dry-run=server -k cluster/
 ## Evidence
 
 [`test/policy/run.sh`](../test/policy/run.sh) runs the case matrix against a throwaway kind cluster, and [`run-all.sh`](../test/policy/run-all.sh) repeats it for Kubernetes 1.30.13, 1.32.11 and 1.34.3. The transcripts are in [`test/policy/results/`](../test/policy/results/).
+
+## Guard limitations
+
+Each service replica verifies these objects (watch, compare, dry-run probes) and stops delivering when they are not in force. Known limits of that check:
+
+- A webhook installed by a cluster admin could return a denial that carries the same status cause as a policy denial, so a probe would read as denied by the policy. Cluster admins are trusted.
+- A replica that stays bad after its last marking, whose marker another replica clears, and that restarts after the flaw heals and before its next evaluation, does not move `verifiedSince`. The window is bounded by the retry backoff plus one evaluation: while a replica is not verified it starts its next evaluation at most 30 seconds after the last one ended, and an evaluation takes up to 60 seconds of probes (three dry-run creates with a 20-second timeout each) plus the server-time read and the guard-state write.
+- The guard reads the API-server time with a dry-run ConfigMap create in the service namespace. A `count/configmaps` ResourceQuota at its limit, or a ConfigMap-create webhook without `sideEffects: None`, makes that read fail; whenever `verifiedSince` has to move, the guard then fails closed (it stays `unknown` and does not deliver).

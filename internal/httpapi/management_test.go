@@ -506,11 +506,3 @@ func TestValueNeverReturned(t *testing.T) {
 		t.Error("no log output captured")
 	}
 }
-
-func TestStubGuardStatus(t *testing.T) {
-	got := StubGuardStatus{}.State()
-	want := guard.GuardState{State: "unknown", Mode: "enforced", Reason: "not_started"}
-	if got != want {
-		t.Errorf("got %+v", got)
-	}
-}

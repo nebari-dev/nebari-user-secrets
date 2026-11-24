@@ -1,0 +1,18 @@
+bash test/policy/run-all.sh
+### v1.30.13
+Server Version: v1.30.13
+PASS  Warn-and-restore is detectable: resourceVersion changed and generation advanced by 2, uid unchanged
+PASS  delete-and-recreate is detectable: uid changed
+RESULT: 42 passed, 0 failed
+### v1.32.11
+Server Version: v1.32.11
+PASS  Warn-and-restore is detectable: resourceVersion changed and generation advanced by 2, uid unchanged
+PASS  delete-and-recreate is detectable: uid changed
+RESULT: 42 passed, 0 failed
+### v1.34.3
+Server Version: v1.34.3
+PASS  Warn-and-restore is detectable: resourceVersion changed and generation advanced by 2, uid unchanged
+PASS  delete-and-recreate is detectable: uid changed
+RESULT: 42 passed, 0 failed
+### done
+exit 0

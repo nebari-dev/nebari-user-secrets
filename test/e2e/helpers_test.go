@@ -197,8 +197,16 @@ var forwardRE = regexp.MustCompile(`Forwarding from 127\.0\.0\.1:(\d+)`)
 // user-secrets.<ns>.svc, since the dial target is localhost.
 func mgmtClient(t *testing.T) *mgmtAPI {
 	t.Helper()
+	return portForwardMgmt(t, landingNS, "pod/landing-proxy")
+}
+
+// portForwardMgmt port-forwards local to port 8444 of target in namespace ns
+// and returns a management API client for it, trusting only the cluster's
+// trust bundle and checking the certificate for user-secrets.<ns>.svc.
+func portForwardMgmt(t *testing.T, ns, target string) *mgmtAPI {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "kubectl", "-n", landingNS, "port-forward", "pod/landing-proxy", ":8444")
+	cmd := exec.CommandContext(ctx, "kubectl", "-n", ns, "port-forward", target, ":8444")
 	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

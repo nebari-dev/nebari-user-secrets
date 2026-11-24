@@ -9,6 +9,27 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, list, create, update, delete]
+  # The guard watches the creators ConfigMap and its own guard-state ConfigMap
+  # (informers with metadata.name field selectors, authorized by name).
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [user-secrets-creators, user-secrets-guard-state]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [user-secrets-guard-state]
+    verbs: [update]
+  # Unrestricted: resourceNames cannot restrict create. The guard creates
+  # user-secrets-guard-state and reads the API-server time with a dry-run
+  # ConfigMap create.
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  # Dry-run probe pods only: policy A denies real pod creates by this
+  # ServiceAccount.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

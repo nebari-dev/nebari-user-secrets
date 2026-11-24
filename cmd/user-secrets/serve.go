@@ -24,8 +24,10 @@ import (
 	"github.com/nebari-dev/nebari-user-secrets/internal/auth"
 	"github.com/nebari-dev/nebari-user-secrets/internal/config"
 	"github.com/nebari-dev/nebari-user-secrets/internal/crypto"
+	"github.com/nebari-dev/nebari-user-secrets/internal/guard"
 	"github.com/nebari-dev/nebari-user-secrets/internal/httpapi"
 	"github.com/nebari-dev/nebari-user-secrets/internal/model"
+	"github.com/nebari-dev/nebari-user-secrets/internal/registry"
 	"github.com/nebari-dev/nebari-user-secrets/internal/service"
 	"github.com/nebari-dev/nebari-user-secrets/internal/store"
 	"github.com/nebari-dev/nebari-user-secrets/internal/telemetry"
@@ -35,6 +37,9 @@ const (
 	managementAddr = ":8444"
 	healthAddr     = ":8080"
 	maxBackoff     = 30 * time.Second
+	// guardGrace is how long an unknown guard state keeps allowing delivery
+	// after a verified one.
+	guardGrace = 2 * time.Minute
 )
 
 // parseServeFlags parses the serve arguments and returns the config path.
@@ -123,7 +128,11 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	keys := auth.NewJWKSKeySet(cfg.Keycloak.JWKSURL, &http.Client{Timeout: 10 * time.Second}, time.Now)
 	verifier := auth.NewSessionVerifier(keys, cfg.Keycloak.Issuers, cfg.Keycloak.ClientID, time.Now)
-	mgmt := httpapi.NewManagementHandler(verifier, svc, reg, httpapi.StubGuardStatus{}, logger)
+	g, guardStarters, err := newGuard(cfg, cs, reg, aud)
+	if err != nil {
+		return err
+	}
+	mgmt := httpapi.NewManagementHandler(verifier, svc, reg, g, logger)
 
 	certs, err := newCertReloader(cfg.TLS.CertFile, cfg.TLS.KeyFile, logger)
 	if err != nil {
@@ -142,6 +151,9 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	healthSrv := newHTTPServer(healthAddr, healthHandler(&kekReady))
 	errc := make(chan error, 2)
 	go func() { errc <- healthSrv.ListenAndServe() }()
+	// The guard runs in the background from here on: its informers and probes
+	// never delay the health server or the master-key bootstrap.
+	startGuard(ctx, g, guardStarters, logger)
 
 	if err := kek.Bootstrap(ctx); err != nil {
 		if !errors.Is(err, crypto.ErrKEKUnavailable) {
@@ -173,6 +185,68 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return serveErr
 	}
 	return nil
+}
+
+// starter is a guard dependency that runs until ctx ends (the informers).
+type starter interface{ Start(ctx context.Context) }
+
+// newGuard builds the guard for cfg in the service namespace. In override mode
+// (guard.mode unverified) it builds no watcher, prober or store and returns no
+// starters, so nothing watches or probes.
+func newGuard(cfg *config.Config, cs kubernetes.Interface, reg *registry.Registry, aud audit.AuditSink,
+) (*guard.Guard, []starter, error) {
+	if cfg.Guard.Mode == config.GuardUnverified {
+		g := guard.NewGuard(nil, nil, guard.Expectation{}, nil, nil, aud, guard.ModeOverridden, guardGrace, time.Now)
+		return g, nil, nil
+	}
+	exp, err := guard.NewExpectation(cfg.Namespace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guard expectation: %w", err)
+	}
+	w := guard.NewInformerWatcher(cs, cfg.Namespace)
+	p := guard.NewDryRunProber(cs, cfg.Namespace, guard.PauseImage)
+	st := guard.NewConfigMapStateStore(cs, cfg.Namespace)
+	g := guard.NewGuard(w, p, exp, reg.CreatorsConfigMapData(), st, aud, guard.ModeEnforced, guardGrace, time.Now)
+	return g, []starter{w, st}, nil
+}
+
+// startGuard starts the starters and runs the guard in the background until
+// ctx ends. In override mode it runs runOverridden on the guard's evaluation
+// interval instead.
+func startGuard(ctx context.Context, g *guard.Guard, starters []starter, logger *slog.Logger) {
+	if g.State().Mode == guard.ModeOverridden {
+		t := time.NewTicker(guard.EvaluateInterval)
+		go func() {
+			defer t.Stop()
+			runOverridden(ctx, g, t.C, logger)
+		}()
+		return
+	}
+	for _, s := range starters {
+		s.Start(ctx)
+	}
+	go func() { _ = g.Run(ctx) }()
+}
+
+// evaluator is the part of guard.Guard that runOverridden uses.
+type evaluator interface {
+	Evaluate(ctx context.Context) guard.GuardState
+}
+
+// runOverridden evaluates once now and on every tick until ctx ends, and logs
+// a warning on each check: in override mode secrets are delivered without a
+// verified guard, and the log keeps saying so.
+func runOverridden(ctx context.Context, g evaluator, tick <-chan time.Time, logger *slog.Logger) {
+	for {
+		st := g.Evaluate(ctx)
+		logger.Warn("guard overridden: secrets are delivered without a verified policy guard",
+			"guard_state", st.State, "guard_mode", string(st.Mode))
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick:
+		}
+	}
 }
 
 // sleepCtx waits d or until ctx ends, and reports whether it waited fully.

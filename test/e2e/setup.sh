@@ -128,6 +128,34 @@ install_chart() {
     -f "$FIXTURES/values.yaml" --set-string image="$IMG" --wait --timeout 5m
 }
 
+# restart_service moves the pods onto the image just loaded: the tag does not
+# change between builds, so helm leaves running pods on the previous one. It
+# runs after apply_bundle, so the guard starts with the bundle in place.
+restart_service() {
+  kubectl -n "$SERVICE_NS" rollout restart deployment/user-secrets
+  kubectl -n "$SERVICE_NS" rollout status deployment/user-secrets --timeout=300s
+}
+
+# apply_bundle applies cluster/ (policies, bindings, cluster RBAC) after the
+# chart, which creates the user-secrets-creators ConfigMap binding B reads. For
+# another SERVICE_NS it renders a temporary copy with install-config.yaml
+# rewritten; repo files are never edited.
+apply_bundle() {
+  log "applying the cluster bundle for namespace $SERVICE_NS"
+  if [[ "$SERVICE_NS" == us-system ]]; then
+    kubectl apply -k "$ROOT/cluster"
+    return
+  fi
+  (
+    dir=$(mktemp -d)
+    trap 'rm -rf "$dir"' EXIT
+    cp -r "$ROOT/cluster/." "$dir/"
+    sed -i "s/^  namespace: us-system\$/  namespace: $SERVICE_NS/" "$dir/install-config.yaml"
+    grep -qx "  namespace: $SERVICE_NS" "$dir/install-config.yaml"
+    kubectl apply -k "$dir"
+  )
+}
+
 install_clients() {
   log "starting the landing proxy and the workload client"
   kubectl apply -f "$FIXTURES/clients.yaml"
@@ -143,6 +171,8 @@ case "${1:-}" in
     install_nic_ca
     install_jwks
     install_chart
+    apply_bundle
+    restart_service
     install_clients
     log "ready: KUBECONFIG=$KUBECONFIG"
     ;;

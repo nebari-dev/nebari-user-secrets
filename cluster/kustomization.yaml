@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - install-config.yaml
   - policies.yaml
+  - rbac.yaml
 replacements:
   - source:
       kind: ConfigMap
@@ -22,3 +23,7 @@ replacements:
           name: user-secrets-creators
         fieldPaths:
           - spec.paramRef.namespace
+      - select:
+          kind: ClusterRoleBinding
+        fieldPaths:
+          - subjects.[kind=ServiceAccount].namespace

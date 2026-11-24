@@ -7,7 +7,10 @@ bin
 docs
 test
 hack
-cluster
+# The service embeds cluster/policies.yaml (cluster/embed.go); the rest stays out.
+cluster/*
+!cluster/embed.go
+!cluster/policies.yaml
 *.md
 CLAUDE.md
 coverage.out
