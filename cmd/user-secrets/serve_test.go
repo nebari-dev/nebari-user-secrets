@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -13,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 
 	"github.com/nebari-dev/nebari-user-secrets/internal/audit"
 	"github.com/nebari-dev/nebari-user-secrets/internal/config"
@@ -227,6 +230,52 @@ func TestNewHTTPServerBounds(t *testing.T) {
 	}
 }
 
+// TestTLSServerProtocols: a client that tries HTTP/2 gets it from the
+// management server but only HTTP/1.1 from the resolve server.
+func TestTLSServerProtocols(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := writePair(t, dir, "user-secrets", time.Now())
+	certs, err := newCertReloader(certPath, keyPath, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mgmt := func() *http.Server { return newTLSServer(managementAddr, ok, certs.GetCertificate) }
+	resolve := func() *http.Server { return newResolveServer(resolveAddr, ok, certs.GetCertificate) }
+	tests := []struct {
+		name      string
+		build     func() *http.Server
+		wantProto string
+	}{
+		{name: "management keeps HTTP/2", build: mgmt, wantProto: "HTTP/2.0"},
+		{name: "resolve is HTTP/1.1 only", build: resolve, wantProto: "HTTP/1.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := tt.build()
+			go func() { _ = srv.ServeTLS(ln, "", "") }()
+			defer func() { _ = srv.Close() }()
+			client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+				ForceAttemptHTTP2: true,
+				// Test-only self-signed certificate without SANs.
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // test server
+			}}
+			resp, err := client.Get("https://" + ln.Addr().String() + "/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.Proto != tt.wantProto {
+				t.Fatalf("proto %s, want %s", resp.Proto, tt.wantProto)
+			}
+		})
+	}
+}
+
 func TestNewGuard(t *testing.T) {
 	reg, err := registry.Load(strings.NewReader("{}"))
 	if err != nil {
@@ -266,6 +315,45 @@ func TestNewGuard(t *testing.T) {
 			}
 			if len(starters) != tt.wantStarters {
 				t.Errorf("%d starters, want %d", len(starters), tt.wantStarters)
+			}
+		})
+	}
+}
+
+func TestNewClientsets(t *testing.T) {
+	tests := []struct {
+		name string
+		k    config.Kubernetes
+	}{
+		{name: "chart defaults", k: config.Kubernetes{QPS: 50, Burst: 100}},
+		{name: "fractional qps", k: config.Kubernetes{QPS: 7.5, Burst: 8}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc := &rest.Config{Host: "https://kube.example"}
+			cs, guardCS, err := newClientsets(rc, tt.k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rc.QPS != 0 || rc.Burst != 0 || rc.RateLimiter != nil {
+				t.Errorf("rc modified: qps %v burst %d limiter %v", rc.QPS, rc.Burst, rc.RateLimiter)
+			}
+			// One limiter for every API group the store, master key and pod
+			// verifier use, at the configured rate.
+			core := cs.CoreV1().RESTClient().GetRateLimiter()
+			if got := core.QPS(); got != tt.k.QPS {
+				t.Errorf("service qps %v, want %v", got, tt.k.QPS)
+			}
+			if authn := cs.AuthenticationV1().RESTClient().GetRateLimiter(); authn != core {
+				t.Error("authentication/v1 does not share the core/v1 limiter")
+			}
+			// The guard's client has client-go's defaults and shares nothing.
+			gcore := guardCS.CoreV1().RESTClient().GetRateLimiter()
+			if gcore == core {
+				t.Error("guard shares the service limiter")
+			}
+			if got := gcore.QPS(); got != rest.DefaultQPS {
+				t.Errorf("guard qps %v, want %v", got, rest.DefaultQPS)
 			}
 		})
 	}

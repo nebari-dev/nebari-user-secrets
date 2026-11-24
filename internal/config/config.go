@@ -22,14 +22,29 @@ const (
 
 // Config is the service configuration.
 type Config struct {
-	Namespace string          `json:"namespace"`
-	Registry  registry.Config `json:"registry"`
-	Keycloak  Keycloak        `json:"keycloak"`
-	TLS       TLS             `json:"tls"`
-	Guard     Guard           `json:"guard"`
-	Limits    service.Limits  `json:"limits"`
-	InitImage string          `json:"initImage"`
+	Namespace  string          `json:"namespace"`
+	Registry   registry.Config `json:"registry"`
+	Keycloak   Keycloak        `json:"keycloak"`
+	TLS        TLS             `json:"tls"`
+	Guard      Guard           `json:"guard"`
+	Limits     service.Limits  `json:"limits"`
+	Kubernetes Kubernetes      `json:"kubernetes"`
+	InitImage  string          `json:"initImage"`
 }
+
+// Kubernetes sets the client rate limit for the store, master key and pod
+// verification calls. The policy guard has its own client with client-go's
+// defaults.
+type Kubernetes struct {
+	QPS   float32 `json:"qps"`
+	Burst int     `json:"burst"`
+}
+
+// Kubernetes client defaults.
+const (
+	DefaultKubernetesQPS   float32 = 50
+	DefaultKubernetesBurst int     = 100
+)
 
 // Keycloak names the realm whose access tokens the management API accepts.
 type Keycloak struct {
@@ -75,6 +90,12 @@ func Load(path string) (*Config, error) {
 			*l.v = l.def
 		}
 	}
+	if c.Kubernetes.QPS == 0 {
+		c.Kubernetes.QPS = DefaultKubernetesQPS
+	}
+	if c.Kubernetes.Burst == 0 {
+		c.Kubernetes.Burst = DefaultKubernetesBurst
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -95,6 +116,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: tls.certFile and tls.keyFile are required")
 	case c.Guard.Mode != GuardEnforced && c.Guard.Mode != GuardUnverified:
 		return fmt.Errorf("config: guard.mode must be %q or %q", GuardEnforced, GuardUnverified)
+	case c.Kubernetes.QPS <= 0:
+		return fmt.Errorf("config: kubernetes.qps must be greater than 0")
+	case c.Kubernetes.Burst < 1:
+		return fmt.Errorf("config: kubernetes.burst must be at least 1")
+	case float32(c.Kubernetes.Burst) < c.Kubernetes.QPS:
+		return fmt.Errorf("config: kubernetes.burst must be at least kubernetes.qps")
 	}
 	return nil
 }

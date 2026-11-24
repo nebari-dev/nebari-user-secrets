@@ -120,12 +120,21 @@ install_jwks() {
   kubectl -n e2e-keycloak rollout status deployment/jwks --timeout=180s
 }
 
+# install_consumer creates the test-consumer namespace and its ServiceAccounts
+# before the chart, which renders a pod-reader Role into every registered
+# workload namespace.
+install_consumer() {
+  log "creating the test-consumer namespace, workload and creator ServiceAccounts"
+  kubectl apply -f "$FIXTURES/consumer.yaml"
+}
+
 install_chart() {
   log "loading $IMG into $CLUSTER and installing the chart"
   kind load docker-image "$IMG" --name "$CLUSTER"
   kubectl create namespace "$SERVICE_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   helm upgrade --install user-secrets "$ROOT/chart" --namespace "$SERVICE_NS" \
-    -f "$FIXTURES/values.yaml" --set-string image="$IMG" --wait --timeout 5m
+    -f "$FIXTURES/values.yaml" -f "$FIXTURES/values-consumer.yaml" \
+    --set-string image="$IMG" --wait --timeout 5m
 }
 
 # restart_service moves the pods onto the image just loaded: the tag does not
@@ -170,6 +179,7 @@ case "${1:-}" in
     install_cert_manager
     install_nic_ca
     install_jwks
+    install_consumer
     install_chart
     apply_bundle
     restart_service

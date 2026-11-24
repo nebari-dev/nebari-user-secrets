@@ -32,7 +32,8 @@ type SecretStore interface {
 	// Put writes rec; expectedVersion "" means create. It returns the new resourceVersion.
 	Put(ctx context.Context, rec *model.OwnerRecord, expectedVersion string) (string, error)
 	Delete(ctx context.Context, ownerSub string) error
-	// RecordDelivery is best-effort and rate-limited per app: a failed write returns nil.
+	// RecordDelivery is rate-limited per app (a skipped call returns nil) and
+	// returns a failed write's error; callers log it and never fail a resolve.
 	RecordDelivery(ctx context.Context, ownerSub string, s model.DeliveryStatus) error
 	Deliveries(ctx context.Context, ownerSub string) ([]model.DeliveryStatus, error)
 	// AnyRecords reports whether any owner record exists.

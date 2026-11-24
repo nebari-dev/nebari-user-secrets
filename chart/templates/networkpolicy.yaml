@@ -1,5 +1,7 @@
-# Management port (8444) from the landing frontend pods only. The resolve and
-# injector ports are added with their servers in later slices.
+# Management port (8444) from the landing frontend pods only; resolve port
+# (8443) from any pod in a registered workload namespace (the service verifies
+# each caller's pod-bound token). The injector port is added with its server.
+{{- $workloadNS := include "user-secrets.workloadNamespaces" . | fromJsonArray }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -23,3 +25,14 @@ spec:
       ports:
         - protocol: TCP
           port: 8444
+    {{- if $workloadNS }}
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: {{ $workloadNS | toJson }}
+      ports:
+        - protocol: TCP
+          port: 8443
+    {{- end }}

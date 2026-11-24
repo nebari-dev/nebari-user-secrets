@@ -35,6 +35,9 @@ func TestLoadConfig(t *testing.T) {
 			if c.Limits != service.DefaultLimits() {
 				t.Errorf("limits = %+v, want defaults", c.Limits)
 			}
+			if c.Kubernetes != (Kubernetes{QPS: 50, Burst: 100}) {
+				t.Errorf("kubernetes = %+v, want qps 50 burst 100", c.Kubernetes)
+			}
 			if c.Namespace != "nebari-user-secrets" || c.Keycloak.ClientID != "landing" {
 				t.Errorf("unexpected config %+v", c)
 			}
@@ -46,6 +49,32 @@ func TestLoadConfig(t *testing.T) {
 				t.Errorf("limits = %+v, want %+v", c.Limits, want)
 			}
 		}},
+		{name: "kubernetes client limits set", doc: validBase + "kubernetes:\n  qps: 20.5\n  burst: 21\n", check: func(t *testing.T, c *Config) {
+			if c.Kubernetes != (Kubernetes{QPS: 20.5, Burst: 21}) {
+				t.Errorf("kubernetes = %+v, want qps 20.5 burst 21", c.Kubernetes)
+			}
+		}},
+		{name: "kubernetes burst equal to qps", doc: validBase + "kubernetes:\n  qps: 30\n  burst: 30\n", check: func(t *testing.T, c *Config) {
+			if c.Kubernetes != (Kubernetes{QPS: 30, Burst: 30}) {
+				t.Errorf("kubernetes = %+v, want qps 30 burst 30", c.Kubernetes)
+			}
+		}},
+		{name: "partial kubernetes keeps the other default", doc: validBase + "kubernetes:\n  qps: 10\n", check: func(t *testing.T, c *Config) {
+			if c.Kubernetes != (Kubernetes{QPS: 10, Burst: 100}) {
+				t.Errorf("kubernetes = %+v, want qps 10 burst 100", c.Kubernetes)
+			}
+		}},
+		{name: "kubernetes qps in exponent form as the chart renders it", doc: validBase + "kubernetes:\n  qps: 1e+06\n  burst: 1000000\n", check: func(t *testing.T, c *Config) {
+			if c.Kubernetes != (Kubernetes{QPS: 1e6, Burst: 1000000}) {
+				t.Errorf("kubernetes = %+v, want qps 1e6 burst 1000000", c.Kubernetes)
+			}
+		}},
+		{name: "negative kubernetes qps", doc: validBase + "kubernetes:\n  qps: -1\n", wantErr: "kubernetes.qps"},
+		{name: "nan kubernetes qps is rejected by the parser", doc: validBase + "kubernetes:\n  qps: .nan\n", wantErr: "parse config"},
+		{name: "negative kubernetes burst", doc: validBase + "kubernetes:\n  burst: -1\n", wantErr: "kubernetes.burst"},
+		{name: "kubernetes burst below qps", doc: validBase + "kubernetes:\n  qps: 50\n  burst: 49\n", wantErr: "kubernetes.burst must be at least kubernetes.qps"},
+		{name: "kubernetes qps above default burst", doc: validBase + "kubernetes:\n  qps: 200\n", wantErr: "kubernetes.burst must be at least kubernetes.qps"},
+		{name: "kubernetes qps not a number", doc: validBase + "kubernetes:\n  qps: fast\n", wantErr: "parse config"},
 		{name: "unverified is allowed and warns", doc: validBase + "guard:\n  mode: unverified\n", warnings: 1},
 		{name: "unknown guard mode", doc: validBase + "guard:\n  mode: sometimes\n", wantErr: "guard.mode"},
 		{name: "negative limit", doc: validBase + "limits:\n  maxSecrets: -1\n", wantErr: "limits"},

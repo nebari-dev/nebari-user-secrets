@@ -101,17 +101,24 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer (Flush).
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	r.wrote = true
 	return r.ResponseWriter.Write(b)
 }
 
+func (h *handler) instrument(pattern, name string, next http.HandlerFunc) http.Handler {
+	return instrument(h.log, "httpapi.management.", pattern, name, next)
+}
+
 // instrument starts the span and writes one log line per request: method,
 // route pattern, status and duration, never the token, body or value.
-func (h *handler) instrument(pattern, name string, next http.HandlerFunc) http.Handler {
+func instrument(log *slog.Logger, spanPrefix, pattern, name string, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ctx, span := otel.Tracer("nebari-user-secrets").Start(r.Context(), "httpapi.management."+name)
+		ctx, span := otel.Tracer("nebari-user-secrets").Start(r.Context(), spanPrefix+name)
 		defer span.End()
 		span.SetAttributes(attribute.String("http.route", pattern), attribute.String("http.method", r.Method))
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -123,7 +130,7 @@ func (h *handler) instrument(pattern, name string, next http.HandlerFunc) http.H
 					}
 					// The panic value may hold a secret: log only its type.
 					span.RecordError(errors.New("handler panic"))
-					h.log.LogAttrs(ctx, slog.LevelError, "panic",
+					log.LogAttrs(ctx, slog.LevelError, "panic",
 						slog.String("method", r.Method),
 						slog.String("route", pattern),
 						slog.String("panic_type", fmt.Sprintf("%T", p)),
@@ -145,7 +152,7 @@ func (h *handler) instrument(pattern, name string, next http.HandlerFunc) http.H
 		if rec.code != "" {
 			attrs = append(attrs, slog.String("code", rec.code))
 		}
-		h.log.LogAttrs(ctx, slog.LevelInfo, "request", attrs...)
+		log.LogAttrs(ctx, slog.LevelInfo, "request", attrs...)
 	})
 }
 

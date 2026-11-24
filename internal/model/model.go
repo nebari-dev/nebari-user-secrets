@@ -63,6 +63,7 @@ type PodClaim struct {
 	Pod       PodIdentity
 	App       AppID
 	Principal Principal
+	Created   time.Time // the pod's creationTimestamp, for the pod_predates_guard check
 }
 
 type GuardMode string // "enforced" | "overridden"

@@ -1,0 +1,24 @@
+# Layered onto values.yaml (helm -f values.yaml -f values-consumer.yaml).
+# Helm replaces lists instead of merging them, so registry.apps restates
+# jupyter from values.yaml. test-consumer is the app the resolve tests deliver
+# to (test/e2e/fixtures/consumer.yaml creates its namespace and
+# ServiceAccounts); notebook exists so a user can bind secrets to another app,
+# which a test-consumer pod must not receive.
+registry:
+  apps:
+    - id: jupyter
+      workloads:
+        - namespace: e2e-workload
+          serviceAccount: default
+    - id: notebook
+      workloads:
+        - namespace: e2e-workload
+          serviceAccount: default
+    - id: test-consumer
+      workloads:
+        - namespace: test-consumer
+          serviceAccount: tc-workload
+  creators:
+    - username: system:serviceaccount:test-consumer:tc-creator
+      namespaces: [test-consumer]
+      apps: [test-consumer]

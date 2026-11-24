@@ -237,7 +237,7 @@ func TestRecordDeliveryRateLimited(t *testing.T) {
 	}
 }
 
-func TestRecordDeliveryFailureReturnsNilNoRetry(t *testing.T) {
+func TestRecordDeliveryFailureReturnsErrorNoRetry(t *testing.T) {
 	ctx := context.Background()
 	s, cs, clk := newStore(t)
 	attempts := 0
@@ -249,9 +249,10 @@ func TestRecordDeliveryFailureReturnsNilNoRetry(t *testing.T) {
 		return false, nil, nil
 	})
 	d := model.DeliveryStatus{App: "jupyter", LastOK: clk.now()}
-	if err := s.RecordDelivery(ctx, "alice", d); err != nil {
-		t.Fatalf("got %v, want nil", err)
+	if err := s.RecordDelivery(ctx, "alice", d); err == nil {
+		t.Fatal("got nil, want the write error")
 	}
+	// The failed attempt still counts against the rate limit: the skip is nil.
 	if err := s.RecordDelivery(ctx, "alice", d); err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +278,48 @@ func TestDeliveriesRoundTrip(t *testing.T) {
 	sec, _ := cs.CoreV1().Secrets(ns).Get(ctx, model.StatusSecretName("alice"), metav1.GetOptions{})
 	if sec.Labels[recordLabel] != "status" || sec.Data[statusKey] == nil {
 		t.Fatalf("status secret: %+v", sec)
+	}
+}
+
+func TestRecordDeliveryKeepsOtherOutcome(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t1 := t0.Add(2 * time.Minute)
+	okAt := func(t time.Time, n int) model.DeliveryStatus {
+		return model.DeliveryStatus{App: "jupyter", LastOK: t, LastCount: n}
+	}
+	failAt := func(t time.Time, r string) model.DeliveryStatus {
+		return model.DeliveryStatus{App: "jupyter", LastFailure: t, LastReason: r}
+	}
+	tests := []struct {
+		name          string
+		first, second model.DeliveryStatus
+		want          model.DeliveryStatus
+	}{
+		{name: "failure keeps last success", first: okAt(t0, 2), second: failAt(t1, "not_registered"),
+			want: model.DeliveryStatus{App: "jupyter", LastOK: t0, LastCount: 2, LastFailure: t1, LastReason: "not_registered"}},
+		{name: "success keeps last failure", first: failAt(t0, "decrypt_failed"), second: okAt(t1, 1),
+			want: model.DeliveryStatus{App: "jupyter", LastOK: t1, LastCount: 1, LastFailure: t0, LastReason: "decrypt_failed"}},
+		{name: "success replaces success", first: okAt(t0, 2), second: okAt(t1, 0),
+			want: model.DeliveryStatus{App: "jupyter", LastOK: t1, LastCount: 0}},
+		{name: "failure replaces failure", first: failAt(t0, "a"), second: failAt(t1, "b"),
+			want: model.DeliveryStatus{App: "jupyter", LastFailure: t1, LastReason: "b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _, clk := newStore(t)
+			if err := s.RecordDelivery(ctx, "alice", tt.first); err != nil {
+				t.Fatal(err)
+			}
+			clk.t = clk.t.Add(2 * time.Minute)
+			if err := s.RecordDelivery(ctx, "alice", tt.second); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Deliveries(ctx, "alice")
+			if err != nil || len(got) != 1 || got[0] != tt.want {
+				t.Fatalf("%+v %v, want %+v", got, err, tt.want)
+			}
+		})
 	}
 }
 
