@@ -197,8 +197,7 @@ type putBody struct {
 // it listed with its delivered name, never its value.
 func TestManagementCreateList(t *testing.T) {
 	api := mgmtClient(t)
-	sub := uniqueSub("journey1")
-	tok := signToken(t, sub, clientID)
+	tok, _ := freshUser(t, "alice")
 	value := "vendor-" + rand.Text()
 
 	status, body := api.mustDo(t, http.MethodPut, "/api/v1/secrets/vendor_key", tok, putBody{
@@ -243,7 +242,7 @@ func TestManagementRejectsOtherClient(t *testing.T) {
 	api := mgmtClient(t)
 	tests := []struct {
 		name       string
-		azp        string
+		client     string
 		wantStatus int
 	}{
 		{"landing client", clientID, http.StatusOK},
@@ -251,7 +250,7 @@ func TestManagementRejectsOtherClient(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tok := signToken(t, uniqueSub("journey8d"), tt.azp)
+			tok := userToken(t, "alice", tt.client)
 			status, body := api.mustDo(t, http.MethodGet, "/api/v1/secrets", tok, nil)
 			if status != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body %s", status, tt.wantStatus, body)
@@ -360,8 +359,7 @@ func (nopAuditor) KeyEvent(context.Context, string, string, string, string) {}
 // restart and a helm upgrade, and a replica stays ready throughout.
 func TestDurabilityAcrossRestart(t *testing.T) {
 	api := mgmtClient(t)
-	sub := uniqueSub("journey9")
-	tok := signToken(t, sub, clientID)
+	tok, sub := freshUser(t, "alice")
 	value := "durable-" + rand.Text()
 
 	status, body := api.mustDo(t, http.MethodPut, "/api/v1/secrets/durable_key", tok, putBody{
@@ -424,7 +422,6 @@ func TestDurabilityAcrossRestart(t *testing.T) {
 // control case pins the workload pod's timeout on the policy: the same pod
 // reaches another in-cluster HTTPS Service.
 func TestNetworkExposure(t *testing.T) {
-	jwks := "jwks.e2e-keycloak.svc:443"
 	mgmt := serviceHost + ":8444"
 	tests := []struct {
 		name        string
@@ -433,7 +430,7 @@ func TestNetworkExposure(t *testing.T) {
 		target      string
 		wantConnect bool
 	}{
-		{"control: workload pod reaches the JWKS server", workloadNS, "workload-client", jwks, true},
+		{"control: workload pod reaches Keycloak", workloadNS, "workload-client", keycloakHost, true},
 		{"workload namespace is blocked", workloadNS, "workload-client", mgmt, false},
 		{"landing pod connects", landingNS, "landing-proxy", mgmt, true},
 		// The service listens on 8443 (resolve), but the policy admits it only

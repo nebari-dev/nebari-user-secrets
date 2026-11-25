@@ -3,8 +3,9 @@
 set -euo pipefail
 
 CLUSTER=us-dev
-IMAGE=kindest/node:v1.34.3
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/ci/load-pins.sh"
+IMAGE=$KIND_NODE_IMAGE
 KUBECONFIG_PATH="$ROOT/.kube/kind"
 
 case "${1:-}" in

@@ -1,0 +1,317 @@
+# Journey catalog: the single source for features, journeys, CI checks, tiers,
+# statuses, test names and reasons. docs/ci/coverage.md is generated from it
+# with `make coverage-doc`; the Tier 1 catalog test
+# (test/journeys/catalog/catalog_test.go TestRepoCatalog) fails when a covered
+# check names a test that does not exist in its tier, a gap has no reason, the
+# journeys disagree with docs/design/user-secrets-spec.md, or coverage.md is
+# stale.
+#
+# Tiers: 1 = unit and chart tests (no build tag); 2 = kind suite (build tags
+# e2e and integration) and the policy matrix (run.sh:<section label> of
+# test/policy/run.sh); 3 = real Nebari (build tag journeys). A not-covered check whose test would
+# live in another repo has no tier.
+#
+# Statuses: covered (the named tests exist and run in that tier today);
+# planned (the slice in `until` adds the test; counts as not covered);
+# not-covered (CI cannot do it; `reason` says why, `until` what would change
+# that). Feature IDs are stable: never renumber; retire instead.
+
+features:
+  - id: F1
+    title: A user stores, rotates and deletes their own secrets through the management API, and never reads a value back
+    source: "docs/design/user-secrets.md#goals (1)"
+    status: active
+  - id: F2
+    title: Per-secret, per-app bindings; delivered names are always `NEBARI_SECRET_<SUFFIX>`
+    source: "docs/design/user-secrets.md#goals (2)"
+    status: active
+  - id: F3
+    title: Enabled secrets arrive at pod start as files, and optionally env vars, in notebooks, jhub-apps apps and Dask clusters
+    source: "docs/design/user-secrets.md#goals (3), docs/design/user-secrets.md#delivery"
+    status: active
+  - id: F4
+    title: Pod identity comes only from a registered creator, enforced by the API server; the service delivers nothing when it cannot confirm that
+    source: "docs/design/user-secrets.md#goals (4), docs/design/user-secrets.md#pod-identity-and-the-admission-guard"
+    status: active
+  - id: F5
+    title: A user can see per app when delivery last happened and why it last failed
+    source: "docs/design/user-secrets.md#goals (5)"
+    status: active
+  - id: F6
+    title: Values are encrypted per user under a rotatable master key; a lost master key stops delivery
+    source: "docs/design/user-secrets.md#goals (6), docs/design/user-secrets.md#storage-and-encryption"
+    status: active
+  - id: F7
+    title: Every value read and every denial is audited
+    source: "docs/design/user-secrets.md#goals (7)"
+    status: active
+  - id: F8
+    title: Any pack can consume secrets by meeting the consumer contract, with values only
+    source: "docs/design/user-secrets.md#goals (8), docs/design/user-secrets.md#consumer-contract"
+    status: active
+  - id: F9
+    title: Installing the service changes no existing workload
+    source: "docs/design/user-secrets.md#goals (9)"
+    status: active
+  - id: F10
+    title: The management API is reachable only from the landing page, inside the cluster
+    source: "docs/design/user-secrets.md#threat-model, docs/design/user-secrets.md#architecture"
+    status: active
+  - id: F11
+    title: Secrets survive restarts and upgrades of the service
+    source: "docs/design/user-secrets.md#architecture"
+    status: active
+  - id: F12
+    title: Sharing consequences are stated where the user shares
+    source: "docs/design/user-secrets.md#threat-model"
+    status: active
+
+journeys:
+  - id: J1
+    feature: F1
+    checks:
+      - id: J1.1
+        tier: 2
+        status: covered
+        tests: [TestManagementCreateList]
+      - id: J1.2
+        tier: 3
+        status: not-covered
+        reason: Needs a browser login against the landing SPA client; landing has no userSecrets screens yet (nebari-landing#236)
+        until: landing ships the userSecrets screens and Tier 3 can drive a browser login
+      - id: J1.3
+        tier: 3
+        status: planned
+        tests: [TestManagementOnNebari]
+        reason: Tier 3 on a real Nebari, with a user created in the Nebari realm, arrives with the Tier 3 workflow
+        until: Slice 8
+  - id: J2
+    feature: F1
+    checks:
+      - id: J2.1
+        tier: 1
+        status: covered
+        tests: [TestValueNeverReturned]
+  - id: J3
+    feature: F2
+    checks:
+      - id: J3.1
+        tier: 1
+        status: covered
+        tests: [TestBindings, TestEnvNameAlwaysPrefixed, TestResolveNeverUnprefixed, TestDeliveredName]
+  - id: J4
+    feature: F3
+    checks:
+      - id: J4.1
+        tier: 3
+        status: not-covered
+        reason: data-science-pack has no userSecrets integration released
+        until: a data-science-pack release with the userSecrets integration
+  - id: J5
+    feature: F3
+    checks:
+      - id: J5.1
+        tier: 3
+        status: not-covered
+        reason: dask-gateway-pack userSecrets integration is not released
+        until: a dask-gateway-pack release with the userSecrets integration
+  - id: J6
+    feature: F3
+    checks:
+      - id: J6.1
+        tier: 3
+        status: not-covered
+        reason: data-science-pack userSecrets integration (jhub-apps) is not released
+        until: a data-science-pack release with the userSecrets integration
+  - id: J7
+    feature: F4
+    checks:
+      - id: J7.1
+        tier: 2
+        status: covered
+        tests: [TestCrossUserIsolation]
+      - id: J7.2
+        tier: 2
+        status: covered
+        tests:
+          - "run.sh:policy B: creator allowlist"
+          - "run.sh:policy A: shape and immutability"
+          - "run.sh:pods/binding"
+          - "run.sh:token minting"
+          - "run.sh:kubelet-minted projected token (pod must start)"
+          - "run.sh:service account: dry-run only, and the probe"
+          - "run.sh:label changes through subresources"
+      - id: J7.3
+        status: not-covered
+        reason: The DaskCluster admission policy lives in dask-gateway-pack and is tested there
+        until: never in this repo
+  - id: J8
+    feature: F4
+    checks:
+      - id: J8.1
+        tier: 1
+        status: covered
+        tests: [TestPodVerifier, TestResolveFiltersByApp, TestResolveHandler, TestVerify, TestRoutes]
+  - id: J9
+    feature: F11
+    checks:
+      - id: J9.1
+        tier: 2
+        status: covered
+        tests: [TestDurabilityAcrossRestart, TestDurabilityThroughResolve]
+  - id: J10
+    feature: F1
+    checks:
+      - id: J10.1
+        tier: 3
+        status: planned
+        reason: Needs the init container to deliver into a test-consumer pod
+        until: Slice 9 (init container)
+  - id: J11
+    feature: F7
+    checks:
+      - id: J11.1
+        tier: 1
+        status: covered
+        tests: [TestAuditLines, TestAuditNeverLogsSecrets, TestResolveHandler]
+      - id: J11.2
+        tier: 2
+        status: covered
+        tests: [TestResolveDeniedAudit]
+  - id: J12
+    feature: F4
+    checks:
+      - id: J12.1
+        tier: 1
+        status: covered
+        tests: [TestCompare, TestGuard]
+      - id: J12.2
+        tier: 2
+        status: covered
+        tests: [TestGuardFailClosed, TestGuardVerifiedSinceMoves, TestResolveGuard]
+  - id: J13
+    feature: F3
+    checks:
+      - id: J13.1
+        tier: 3
+        status: planned
+        reason: Needs the init container to write files into a test-consumer pod
+        until: Slice 9 (init container)
+      - id: J13.2
+        tier: 3
+        status: not-covered
+        reason: data-science-pack and dask-gateway-pack userSecrets integrations are not released
+        until: releases of both packs with the userSecrets integration
+  - id: J14
+    feature: F8
+    checks:
+      - id: J14.1
+        tier: 2
+        status: planned
+        reason: A consumer by values only needs the injector
+        until: Slice 10 (injector)
+      - id: J14.2
+        tier: 3
+        status: planned
+        reason: A consumer pack installed by Argo CD on real Nebari needs the injector
+        until: Slice 10 (injector)
+  - id: J15
+    feature: F9
+    checks:
+      - id: J15.1
+        tier: 2
+        status: covered
+        tests:
+          - "run.sh:missing ConfigMap (P1)"
+          - TestMissingConfigMapLeavesClusterWorking
+      - id: J15.2
+        status: not-covered
+        reason: The data-science-pack and dask-gateway-pack golden files live in those repos
+        until: never in this repo
+  - id: J16
+    feature: F3
+    checks:
+      - id: J16.1
+        status: not-covered
+        reason: dask-gateway-pack userSecrets integration is not released
+        until: a dask-gateway-pack release with the userSecrets integration
+  - id: J17
+    feature: F5
+    checks:
+      - id: J17.1
+        tier: 1
+        status: covered
+        tests: [TestResolveHandler, TestServiceRecordDelivery, TestRecordDeliveryKeepsOtherOutcome]
+      - id: J17.2
+        tier: 1
+        status: planned
+        reason: Soft and strict behaviour belongs to the init container (unit tests)
+        until: Slice 9 (init container)
+      - id: J17.3
+        tier: 2
+        status: planned
+        reason: Soft and strict behaviour belongs to the init container (on kind)
+        until: Slice 9 (init container)
+  - id: J18
+    feature: F12
+    checks:
+      - id: J18.1
+        status: not-covered
+        reason: The sharing warning is data-science-pack share dialog UI, not in this repo
+        until: never in this repo
+  - id: J19
+    feature: F10
+    checks:
+      - id: J19.1
+        tier: 1
+        status: covered
+        tests: [TestNoExternalSurface, TestNetworkPolicyPorts]
+      - id: J19.2
+        tier: 2
+        status: covered
+        tests: [TestNetworkExposure]
+  - id: J20
+    feature: F6
+    checks:
+      - id: J20.1
+        tier: 1
+        status: covered
+        tests: [TestSealedBoundToOwnerAndName, TestWrappedKeyBoundToOwner, TestSealOpenRoundTrip]
+      - id: J20.2
+        tier: 2
+        status: covered
+        tests: [TestDecryptFailedOnKind, TestRecordsHoldNoPlaintext]
+  - id: J21
+    feature: F6
+    checks:
+      - id: J21.1
+        tier: 2
+        status: covered
+        tests: [TestKEKRotationOnKind, TestKEKMissingFailsClosed]
+      - id: J21.2
+        tier: 2
+        status: planned
+        tests: [TestKEKRotationDuringStarts]
+        reason: KEK rotation while pods start needs injected pods; the e2e tests come with the operations guide
+        until: Slice 11 (release and operations)
+  - id: J22
+    feature: F8
+    checks:
+      - id: J22.1
+        tier: 2
+        status: planned
+        reason: The injector does not exist yet
+        until: Slice 10 (injector)
+      - id: J22.2
+        tier: 3
+        status: planned
+        reason: The injector does not exist yet
+        until: Slice 10 (injector)
+
+platform_checks:
+  - id: P3.1
+    tier: 3
+    status: planned
+    tests: [TestChartConvergesOnNebari]
+    reason: Platform check (features F4, F11), not a journey; Tier 3 on a real Nebari arrives with the Tier 3 workflow
+    until: Slice 8

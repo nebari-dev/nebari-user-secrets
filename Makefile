@@ -1,6 +1,10 @@
-.PHONY: test lint build policy-test kind-up kind-down image image-load e2e-up e2e-down e2e-test nic-fixtures-check
+.PHONY: test lint build policy-test kind-up kind-down image image-load e2e-up e2e-down e2e-test nic-fixtures-check coverage-doc
 
 IMG ?= ghcr.io/nebari-dev/nebari-user-secrets:dev
+
+# External versions, written only in ci/pins.env; exported to every recipe.
+include ci/pins.env
+export
 
 test:
 	go test ./... -race -cover
@@ -8,11 +12,17 @@ test:
 lint:
 	golangci-lint run
 
+# docs/ci/coverage.md is generated from test/journeys/catalog.yaml; the Tier 1
+# catalog test fails when it is stale.
+coverage-doc:
+	go run ./test/journeys/cmd/coverage > docs/ci/coverage.md
+
 build:
 	CGO_ENABLED=0 go build ./...
 
+# K8S_VERSION=<kindest/node tag> runs one version; default: POLICY_K8S_VERSIONS.
 policy-test:
-	bash test/policy/run-all.sh
+	K8S_VERSION=$(K8S_VERSION) bash test/policy/run-all.sh
 
 kind-up:
 	bash hack/kind.sh up
@@ -25,11 +35,12 @@ kind-down:
 image:
 	mkdir -p bin
 	docker buildx build --platform linux/amd64,linux/arm64 \
+		--build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) \
 		--output type=oci,dest=bin/image.oci.tar -t $(IMG) .
 
 # Host-platform image loaded into the local docker store (used by kind).
 image-load:
-	docker buildx build --load -t $(IMG) .
+	docker buildx build --load --build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE) -t $(IMG) .
 
 # End-to-end cluster us-e2e (kind + Calico + NIC's cluster CA + the chart).
 # Kubeconfig: .kube/e2e. e2e-down deletes only us-e2e.
@@ -44,7 +55,7 @@ e2e-test:
 
 # Manual drift check of the vendored NIC templates against nebari-infrastructure-core
 # at NIC_REF (needs gh). Not a CI gate.
-NIC_REF ?= de81b1131fbe26fca289f841347d84af727f692f
+NIC_REF ?= $(NIC_FIXTURES_REF)
 NIC_FIXTURES = manifests/security/issuers/selfsigned-clusterissuer.yaml \
 	manifests/security/issuers/root-ca-certificate.yaml \
 	manifests/security/issuers/ca-clusterissuer.yaml \

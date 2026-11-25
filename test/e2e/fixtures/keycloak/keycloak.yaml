@@ -1,0 +1,129 @@
+# Keycloak for the kind tier, standing in for the one NIC deploys. It serves
+# HTTPS on 8443 with a certificate from NIC's nebari-ca-issuer, so the service
+# reaches its JWKS through the nebari-trust-bundle mount as in production.
+# KC_HOSTNAME with KC_HOSTNAME_STRICT fixes iss to the in-cluster URL however a
+# token is requested. The realm comes from the ConfigMap keycloak-realm, which
+# setup.sh creates from realm.json. kc-client is the in-cluster client the
+# tests exec curl in to request tokens.
+#
+# ${KEYCLOAK_IMAGE} and ${CURL_IMAGE} are filled in from ci/pins.env by
+# setup.sh at apply time.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-keycloak
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls
+  namespace: e2e-keycloak
+spec:
+  secretName: keycloak-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: nebari-ca-issuer
+  dnsNames:
+    - keycloak.e2e-keycloak.svc
+    - keycloak.e2e-keycloak.svc.cluster.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: e2e-keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: ${KEYCLOAK_IMAGE}
+          args: ["start-dev", "--import-realm"]
+          env:
+            - name: KC_HOSTNAME
+              value: https://keycloak.e2e-keycloak.svc:8443
+            - name: KC_HOSTNAME_STRICT
+              value: "true"
+            - name: KC_HTTP_ENABLED
+              value: "false"
+            - name: KC_HTTPS_CERTIFICATE_FILE
+              value: /etc/keycloak/tls/tls.crt
+            - name: KC_HTTPS_CERTIFICATE_KEY_FILE
+              value: /etc/keycloak/tls/tls.key
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            # Plain HTTP on the management port, for the kubelet's probe.
+            - name: KC_HTTP_MANAGEMENT_SCHEME
+              value: http
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: management
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/keycloak/tls
+              readOnly: true
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: keycloak-tls
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: e2e-keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kc-client
+  namespace: e2e-keycloak
+spec:
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: curl
+      image: ${CURL_IMAGE}
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: trust
+          mountPath: /etc/nebari/trust
+          readOnly: true
+  volumes:
+    - name: trust
+      configMap:
+        name: nebari-trust-bundle

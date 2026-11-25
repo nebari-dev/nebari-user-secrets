@@ -7,57 +7,21 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nebari-dev/nebari-user-secrets/internal/crypto"
 	"github.com/nebari-dev/nebari-user-secrets/internal/model"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/nebari-dev/nebari-user-secrets/internal/testkube"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("go.mod not found")
-		}
-		dir = parent
-	}
-}
-
+// testNamespace is testkube.Namespace: the kind cluster from
+// USER_SECRETS_TEST_KUBECONFIG or .kube/kind, and a throwaway namespace.
 func testNamespace(t *testing.T) (kubernetes.Interface, string) {
 	t.Helper()
-	cfg, err := clientcmd.BuildConfigFromFlags("", filepath.Join(repoRoot(t), ".kube", "kind"))
-	if err != nil {
-		t.Fatalf("kubeconfig (run make kind-up): %v", err)
-	}
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	name := fmt.Sprintf("us-test-%d", time.Now().UnixNano())
-	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = cs.CoreV1().Namespaces().Delete(context.Background(), name, metav1.DeleteOptions{})
-	})
-	return cs, name
+	return testkube.Namespace(t)
 }
 
 // TestRecordsHoldNoPlaintext: journey 20. The raw Secret holds neither a

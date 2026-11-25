@@ -4,11 +4,11 @@
 
 **Goal:** Build the nebari-user-secrets service, init binary, injector, chart and cluster bundle, and prove them end to end on kind with a test consumer.
 
-**Architecture:** One Go module with two binaries (`user-secrets`: management API, resolve API, injector webhook, guard, admin commands; `user-secrets-init`: fetch and env wrapper), `internal/` packages behind interfaces, a Helm chart for the namespaced objects and `cluster/` for the cluster-scoped ones. Delivered as nine stacked slices, each a PR against the previous slice's branch, starting from `docs/user-secrets-design` (nebari-user-secrets#1).
+**Architecture:** One Go module with two binaries (`user-secrets`: management API, resolve API, injector webhook, guard, admin commands; `user-secrets-init`: fetch and env wrapper), `internal/` packages behind interfaces, a Helm chart for the namespaced objects and `cluster/` for the cluster-scoped ones. Delivered as eleven stacked slices, each a PR against the previous slice's branch, starting from `docs/user-secrets-design` (nebari-user-secrets#1).
 
 **Tech Stack:** Go 1.26; `k8s.io/{api,apimachinery,client-go}` v0.35.0; `sigs.k8s.io/controller-runtime` v0.23.1 (admission webhook helpers only); `github.com/coreos/go-oidc/v3` v3.21.0; `k8s.io/pod-security-admission` v0.35.0 (tests); `go.opentelemetry.io/otel` v1.45.0; standard library `crypto/aes` and `crypto/cipher`; Helm 3 chart; kind for integration and e2e.
 
-**Spec:** `docs/design/user-secrets-spec.md` (detailed spec, with Program Design) and `docs/design/user-secrets.md` (design), both in nebari-user-secrets.
+**Spec:** `docs/design/user-secrets-spec.md` (detailed spec, with Program Design) and `docs/design/user-secrets.md` (design), both in nebari-user-secrets. Slices 7 and 8 implement `docs/superpowers/specs/2026-11-24-ci-tiers-design.md` (CI tiers, with its own Program Design and CI Journeys C1-C8).
 
 **Scope:** nebari-user-secrets only (decided 2026-11-20). data-science-pack, dask-gateway-pack and nebari-landing get their own plans against the working service. Journeys 4, 5, 6 (dsp half), 10, 16 and 18 are proved there, not here; the five contracts those repos own are not touched by this plan (see "Lint result" at the end).
 
@@ -39,6 +39,322 @@
 | 21 | An admin can rotate the master key without interrupting delivery, and a lost master key stops delivery instead of silently starting over | `user-secrets admin rotate-kek` while notebooks start: every start during and after the rotation gets its secrets; afterwards every record names the new id and `retire-kek <old>` succeeds; with `user-secrets-kek` deleted and records present, the service generates no key, resolve and management return `503 kek_unavailable`, and a `key_event kek_unavailable` line is logged | automated: integration `test_kek_rotation` and `test_kek_missing_fails_closed` on kind | |
 | 22 | A pack sets only the label and annotations, and the injector does the rest; when the injector is down the pack's failure mode decides | A pod with only SA, label and annotations from a registered creator starts with the init container, files and `.status ok`; an unlabelled pod in the same namespace is unchanged; with the service scaled to zero, a `soft` pod starts with no `/var/run/nebari/secrets` and a `strict` pod is refused at creation, and unlabelled pods are unaffected | automated: `internal/inject` table and integration `test_injector_failure_modes` on kind | |
 
+## CI Journeys (from docs/superpowers/specs/2026-11-24-ci-tiers-design.md) and checks
+
+Journey IDs are the spec's J1...J22 (`docs/design/user-secrets-spec.md` "Journeys"), unchanged. Each journey belongs to one feature. A journey has one or more **checks**, ID `J<n>.<k>`, each assigned to one tier or marked not covered. Check status is one of:
+
+- `covered`: the named tests exist and run in that tier today;
+- `planned`: a named later slice adds the test; counts as not covered;
+- `not-covered`: CI cannot do it; the reason says why and what would change that.
+
+| Check | Feature | What it proves | Tier | Status at the CI slice |
+|---|---|---|---|---|
+| J1.1 | F1 | Add and list a secret with a token from the configured client | 2 (real Keycloak, direct grant) | covered |
+| J1.2 | F1 | Same, with a token keycloak-js obtained for the real landing SPA client | 3 | not-covered: needs a browser login against the landing SPA; landing has no `userSecrets` screens yet (nebari-landing#236) |
+| J1.3 | F1 | Add and list a secret on real Nebari, with a user created in the Nebari realm | 3 | covered |
+| J2.1 | F1 | No response ever contains the value | 1 | covered |
+| J3.1 | F2 | Suffix rules and the prefix invariant | 1 | covered |
+| J4.1 | F3 | A notebook gets files and env vars; disabled means absent | 3 | not-covered: data-science-pack has no `userSecrets` integration released |
+| J5.1 | F3 | Dask scheduler and every worker, both layouts | 3 | not-covered: dask-gateway-pack integration not released |
+| J6.1 | F3 | jhub-apps app gets file and env var | 3 | not-covered: data-science-pack integration not released |
+| J7.1 | F4 | Cross-user isolation with two real Keycloak users | 2 | covered |
+| J7.2 | F4 | Admission policy matrix, one case per rule, per Kubernetes version | 2 (policy matrix) | covered |
+| J7.3 | F4 | dask-gateway-pack's DaskCluster policy | - | not-covered: lives in dask-gateway-pack |
+| J8.1 | F4 | Wrong app, wrong SA, user tokens at resolve, wrong client at management | 1 | covered |
+| J9.1 | F11 | Restart and `helm upgrade` keep secrets; a replica answers throughout | 2 | covered |
+| J10.1 | F1 | Rotate reaches pods started afterwards; delete removes it | 3 (test-consumer pod) | planned: Slice 9 (init container) |
+| J11.1 | F7 | `secret_read` and `resolve_denied` lines, no value substrings | 1 and 2 | covered |
+| J12.1 | F4 | Guard fail-closed table and on kind | 1 and 2 | covered |
+| J13.1 | F3 | Byte-for-byte values in a test-consumer pod | 3 | planned: Slice 9 |
+| J13.2 | F3 | Byte-for-byte in notebook and Dask pods | 3 | not-covered: pack integrations not released |
+| J14.1 | F8 | New consumer by values only, on kind | 2 | planned: Slice 10 |
+| J14.2 | F8 | New consumer pack installed by Argo CD on real Nebari resolves its secrets | 3 | planned: Slice 10 |
+| J15.1 | F9 | Missing ConfigMap and unannotated pods, policy matrix | 2 (policy matrix) | covered |
+| J15.2 | F9 | dsp and dask-gateway-pack golden files | - | not-covered: lives in those repos |
+| J16.1 | F3 | Dask keeps scaling after the session ends | - | not-covered: dask-gateway-pack integration not released |
+| J17.1 | F5 | Status after a failed resolve; unregistered SA; verification failure changes no status | 2 | covered |
+| J17.2 | F5 | Soft and strict init behaviour | 1 and 2 | planned: Slice 9 |
+| J18.1 | F12 | Sharing warning in the dsp share dialog | - | not-covered: dsp UI, not this repo |
+| J19.1 | F10 | Chart has no route; NetworkPolicy enforced by Calico | 1 and 2 | covered |
+| J20.1 | F6 | Records hold no plaintext; swapped keys fail with `decrypt_failed` | 1 and 2 | covered |
+| J21.1 | F6 | KEK rotation under load; missing KEK fails closed | 2 | covered |
+| J22.1 | F8 | Injector and failure modes on kind | 2 | planned: Slice 10 |
+| J22.2 | F8 | Injector on real Nebari alongside NIC's other webhooks | 3 | planned: Slice 10 |
+| P3.1 | F4, F11 | Platform check: the chart converges through Argo CD on real NIC, with its certificate issued by `nebari-ca-issuer` and trusted through the bundle | 3 | covered |
+
+`P3.1` is a platform check, not a journey, and the catalog labels it so; a green Tier 3 with only `P3.1` and `J1.3` covered is reported as such, never as "journeys pass". "Covered" for J7.1, J9.1, J11.1, J12.1, J17.1, J20.1 and J21.1 means the e2e tests that exist on the Slice 6 branch; the catalog names each test function.
+
+## Mocks: what CI cannot reach
+
+| Dependency | In CI | Why |
+|---|---|---|
+| Keycloak (Tier 2) | Real Keycloak in kind, realm imported from a committed fixture (two users, a direct-grant test client, the landing client id). Test passwords are fixture values, not secrets | Replaces the static JWKS stand-in, so J1 and J7 exercise the real token path (issuer, `azp`, key rotation over JWKS) |
+| Keycloak (Tier 3) | The sandbox's own Keycloak; test users created through the admin API with the `keycloak-realm-admin-password` output | Action output, not a repo secret |
+| Landing SPA browser login | Not mocked; J1.2 stays not-covered | A mock would prove only the mock |
+| Container registry | None. The image is built on the runner and loaded with `kind load` into `us-e2e` (Tier 2) or `kind-<cluster-name>` (Tier 3) | No push, so no `packages: write` token |
+| NIC templates (Tier 2) | Vendored copies at `de81b11`, drift-checked by `make nic-fixtures-check` | Already in place |
+| Cloud KMS, external secret consumers | Not used by the first release | Out of scope |
+
+No required check reads `secrets.*`. The catalog check enforces this by failing if any workflow file under `.github/workflows/` references `secrets.` other than `secrets.GITHUB_TOKEN`.
+
+## Pins
+
+One file, `ci/pins.env`, `KEY=value` lines with a comment per pin giving its source. It is the only place each version is written.
+
+| Key | Today |
+|---|---|
+| `GOLANGCI_LINT_VERSION` | v2.4.0, installed with `install-mode: goinstall` so it is built with go.mod's toolchain (Slice 6) |
+| `HELM_VERSION` | v4.3.2 |
+| `KIND_VERSION` | v0.33.0 |
+| `KIND_NODE_IMAGE` | kindest/node:v1.34.3 |
+| `POLICY_K8S_VERSIONS` | v1.30.13 v1.32.11 v1.34.3 |
+| `CALICO_VERSION` | v3.32.3 |
+| `GATEWAY_API_VERSION` | v1.6.1 |
+| `CERT_MANAGER_VERSION` | v1.17.2 |
+| `TRUST_MANAGER_VERSION` | v0.22.1 |
+| `NIC_FIXTURES_REF` | de81b1131fbe26fca289f841347d84af727f692f |
+| `NIC_REQUIRED_COMMIT` | de81b1131fbe26fca289f841347d84af727f692f (#787) |
+| `KEYCLOAK_IMAGE` | quay.io/keycloak/keycloak:<tag>@sha256:<digest>, matching the Keycloak NIC deploys |
+| `GO_BUILDER_IMAGE` | golang:1.26@sha256:<digest> (Task 28's carry-forward lands here) |
+| `PAUSE_IMAGE` | registry.k8s.io/pause:3.10@sha256:ee6521f2... |
+| `SANDBOX_ACTION_REF` | v3.0.0 (documentation only, see below) |
+
+Readers: `test/e2e/setup.sh`, `test/policy/run-all.sh`, `hack/kind.sh` and the Makefile source it; workflows load it into `$GITHUB_ENV` in their first step; the Dockerfile takes `GO_BUILDER_IMAGE` as a build arg from the Makefile. Two pins cannot be read from a file: the Go constant `guard.PauseImage` and the `uses:` refs in workflows (GitHub does not template `uses:`). For these, Tier 1's catalog test asserts that the constant equals `PAUSE_IMAGE`, that the Dockerfile's `ARG GO_BUILDER_IMAGE` default equals the pin, and that every `nebari-dev/action-nebari-sandbox` ref in the workflows equals `SANDBOX_ACTION_REF`.
+
+## Job summaries
+
+Every tier's last step (`if: always()`) writes to `$GITHUB_STEP_SUMMARY`:
+
+1. the commit under test (`github.sha`, and for `merge_group` the queue's head and base SHAs);
+2. every pin from `ci/pins.env`, as a table;
+3. the tier's check results from the catalog: covered checks run in this tier with pass or fail, and the not-covered and planned checks with their reasons.
+
+Tier 3 adds the resolved NIC release tag and its commit, whether it contains `NIC_REQUIRED_COMMIT` (and so whether this run is `BLOCKING` or `NON-BLOCKING`), and the sandbox's `timing-report` and `resource-summary`.
+
+The user's request ended mid-sentence at "Write the resolved NIC version, the commit under test, and every"; this design reads it as "every pinned dependency version".
+
+## Workflows and triggers
+
+| Workflow / job | `pull_request` | `merge_group` | tag `v*` | `workflow_dispatch` | Required check name |
+|---|---|---|---|---|---|
+| `ci.yml` / `tier1` | yes | yes | yes | yes | `tier1` |
+| `ci.yml` / `tier2-e2e` | yes | yes | yes | yes | `tier2-e2e` |
+| `ci.yml` / `tier2-policy` (matrix) | yes | yes | yes | yes | `tier2-policy (v1.30.13)`, `(v1.32.11)`, `(v1.34.3)` |
+| `journeys.yml` / `tier3` | skipped (job `if:`), counts as passing | yes | yes | yes | `tier3` |
+
+`tier3` lives in its own workflow file but is triggered on `pull_request` too, so the required check reports (as skipped) on every PR instead of waiting forever. `workflow_dispatch` takes no NIC version input: it always resolves the latest release, so a dispatch run cannot test NIC `main` either.
+
+Tier 3 steps:
+
+1. Load pins; resolve the latest NIC release (`gh api repos/nebari-dev/nebari-infrastructure-core/releases/latest`) and whether it contains `NIC_REQUIRED_COMMIT` (`compare/<commit>...<tag>`, status `ahead` or `identical`); set `BLOCKING`.
+2. `action-nebari-sandbox` with `nic-version: <resolved tag>`, `in-cluster-dns: true`, `timing-report: true`, `resource-summary: true`.
+3. Build the image from the checkout and `kind load` it into `kind-<cluster-name>`.
+4. `add-software-pack` for `user-secrets` with `chart-source: chart`, and an Application manifest from `test/journeys/gitops/` that sets the image tag to the build and the chart values a Nebari install would set.
+5. Platform convergence check: every Argo CD Application `Synced` and `Healthy`, bounded wait.
+6. `go test -tags journeys ./test/journeys/...` against the sandbox kubeconfig, with outputs passed as env.
+7. Summary. If `BLOCKING` is false: in `merge_group`, steps 2-6 are skipped and the job passes; on tag and dispatch, failures from steps 2-6 are summary warnings and the job exits 0. If true, they fail the job.
+
+**One-off proof run (user decision).** Before the CI slice's checkpoint, Tier 3 is run once by hand with the sandbox's `nic-version` set to `de81b1131fbe26fca289f841347d84af727f692f` (the #787 merge), on a scratch branch whose workflow is edited for that run only and never merged. Its passing output is the evidence that `P3.1` and `J1.3` are `covered`. No trigger in the merged workflows can select a NIC commit; they only resolve the latest release.
+
+## Report before turning anything on
+
+Before anyone changes the ruleset, the CI slice's checkpoint delivers a written report with:
+
+- **Merge queue:** available (public repo); the proposed ruleset (required checks `tier1`, `tier2-e2e`, the three `tier2-policy` checks, `tier3`; merge method squash; build concurrency and batch size from the measurements below).
+- **Stacking:** how the chained PRs interact with the queue (above), measured on one real retarget.
+- **Tier 3 time and size:** `timing-report` and `resource-summary` from the one-off proof run on the #787 commit (full run, journeys included) and from one `workflow_dispatch` run on the latest release (platform bring-up only, stopping at our install); the report labels which is which.
+- **Queue throughput:** with Tier 3 at T minutes and Tier 2 at its measured time, the queue merges at most one group per max(T, Tier 2) minutes per concurrent build; the report gives the batch size that keeps a typical day's merges under an hour, and what a failing batch costs (bisection reruns).
+- **Runner fit:** peak memory and disk from `resource-summary` against the standard runner's 16 GB and 14 GB; if it does not fit, the report says so and Tier 3 stays dispatch-only until a larger runner is decided.
+
+## Coverage honesty
+
+- `test/journeys/catalog.yaml` is the single source for features, journeys, checks, tiers, statuses, test names and reasons. `docs/ci/coverage.md` is generated from it by `make coverage-doc` and checked in; Tier 1 fails if it is stale.
+- The catalog test (Tier 1) fails when: a `covered` check names a test function that does not exist under the build tag its tier uses; a `planned` or `not-covered` check has no reason; a journey in the spec's table has no catalog entry; a feature has no journey; or a workflow reads a secret other than `GITHUB_TOKEN`.
+- Each slice that adds a journey's test flips its check to `covered` in the same PR.
+- Narrated evidence in the plan's Journeys table is not CI coverage, and the catalog never cites it.
+
+## Program Design
+**Scale:** full
+
+### Existing patterns
+Promoted wording: **Bash cluster harnesses behind Make targets:** cluster test harnesses are bash under `test/<area>/` driven by Make targets, and Go tests behind a build tag (`e2e`, `journeys`) read the harness's kubeconfig. **External versions pinned once:** every external version lives in `ci/pins.env` with a comment naming its source; anything that cannot read the file is cross-checked against it by a Tier 1 test. **Vendored upstream files with SOURCE and drift check:** a vendored copy carries a `SOURCE` file naming repo, commit and files, and a Make target diffs it against upstream.
+
+| Pattern | Tag | Source | Promote? |
+|---|---|---|---|
+| Layout is `cmd/<binary>` plus `internal/<pkg>` | [documented: AGENTS.md, docs/architecture/patterns.md] | AGENTS.md | n/a |
+| Go tests are table-driven; constructors take interfaces and return concrete types | [documented: AGENTS.md] | AGENTS.md | n/a |
+| Contracts change with their entry in `docs/architecture/contracts.md` in the same PR | [documented: AGENTS.md] | AGENTS.md | n/a |
+| Bash cluster harnesses behind Make targets | [inferred] | Makefile, test/e2e/setup.sh, test/e2e/helpers_test.go | yes |
+| External versions pinned once | [inferred] | test/e2e/setup.sh:12-25, test/policy/run-all.sh:7, hack/kind.sh:6 | yes |
+| Vendored upstream files with SOURCE and drift check | [inferred] | test/e2e/fixtures/nic/SOURCE, Makefile `nic-fixtures-check` | yes |
+
+### Component contracts
+| Contract | Status | Owner | Consumers | Verified by | Promote? | Notes |
+|---|---|---|---|---|---|---|
+| Pins file `ci/pins.env` | new | nebari-user-secrets | Makefile, test/e2e/setup.sh, test/policy/run-all.sh, hack/kind.sh, .github/workflows/*.yml, test/journeys catalog test | n/a (new) | n/a | `KEY=value`, shell-sourceable, no command substitution |
+| Journey catalog `test/journeys/catalog.yaml` | new | nebari-user-secrets | catalog test, summary tool, docs/ci/coverage.md | n/a (new) | n/a | schema in Data models |
+| Required check names | new | nebari-user-secrets | `main` ruleset (set by the user) | n/a (new) | n/a | `tier1`; `tier2-e2e`; `tier2-policy (<version>)`; `tier3`. Renaming one breaks the ruleset silently |
+| Make targets for the kind tiers | changed-compatible | nebari-user-secrets | .github/workflows/ci.yml, docs/superpowers/plans/2026-11-20-user-secrets-service.md (validation commands), developers | `grep -rn 'e2e-up\|e2e-test\|policy-test' .github Makefile docs` | n/a | `make e2e-up`; `make e2e-test`; `make policy-test`. Same targets; versions now come from pins; `policy-test` accepts `K8S_VERSION` to run one version |
+| Static JWKS server in `e2e-keycloak` | changed-breaking | nebari-user-secrets | test/e2e/setup.sh (`gen_key`, `install_jwks`), test/e2e/fixtures/jwks.yaml, test/e2e/fixtures/values.yaml (issuer/JWKS URL), test/e2e/helpers_test.go (token minting), test/e2e/e2e_test.go:384 (`jwks.e2e-keycloak.svc:443` in the network test) | `grep -rn 'jwks\|e2e-keycloak\|KID' test/e2e` | n/a | replaced by real Keycloak; both consumers change in the CI slice |
+| Consumed: action-nebari-sandbox v3.0.0 inputs and outputs | unchanged | nebari-dev/action-nebari-sandbox | .github/workflows/journeys.yml | `gh api repos/nebari-dev/action-nebari-sandbox/contents/action.yml?ref=v3.0.0` | no | external; pinned by ref |
+| Consumed: NIC root App-of-Apps reads `apps/*.yaml` in the GitOps dir | unchanged (implicit) | nebari-infrastructure-core | add-software-pack, test/journeys/gitops | `gh api repos/nebari-dev/action-nebari-sandbox/contents/add-software-pack/action.yml?ref=v3.0.0` | no | add-software-pack wraps it |
+| Consumed: NIC cluster CA and trust bundle | unchanged | nebari-infrastructure-core | chart, Tier 2 fixtures, Tier 3 | docs/architecture/contracts.md "Consumed: NIC cluster CA and trust bundle" | n/a | Tier 3 is the first test against a real NIC |
+
+**Pins file.** Promises one line per pin, `KEY=value`, values without spaces except `POLICY_K8S_VERSIONS` (space-separated), comments with `#`. Readers `source` it or load it with `grep -v '^#' >> $GITHUB_ENV`. A missing key is a reader error, never a silent default.
+
+**Journey catalog.** Promises the schema below. The catalog test is its validator; a malformed catalog fails Tier 1.
+
+**Required check names.** The ruleset matches checks by name, so a renamed job makes a required check wait forever. The names are written in `contracts.md`, and a change to them is a contract change.
+
+**Keycloak replacing the JWKS stand-in.** Token minting in the e2e helpers moves from signing with a local key to a direct-grant request against the test client. The network test's control target moves to Keycloak's in-cluster address.
+
+### Data models and types
+```yaml
+# test/journeys/catalog.yaml
+features:
+  - id: F1                      # stable, never reused
+    title: "..."
+    source: "docs/design/user-secrets.md#goals"
+    status: active              # active | retired
+journeys:
+  - id: J1                      # = spec Journeys row number
+    feature: F1
+    checks:
+      - id: J1.1
+        tier: 2                 # 1 | 2 | 3
+        status: covered         # covered | planned | not-covered
+        tests: [TestManagementWithKeycloak]   # required when covered
+        reason: ""              # required unless covered
+        until: ""               # planned: slice; not-covered: what would change it
+platform_checks:
+  - id: P3.1
+    tier: 3
+    status: covered
+    tests: [TestChartConvergesOnNebari]
+```
+
+```go
+// test/journeys/catalog (package catalog)
+type Catalog struct {
+	Features       []Feature `json:"features"`
+	Journeys       []Journey `json:"journeys"`
+	PlatformChecks []Check   `json:"platform_checks"`
+}
+type Feature struct{ ID, Title, Source, Status string }
+type Journey struct {
+	ID, Feature string
+	Checks      []Check
+}
+type Check struct {
+	ID, Status, Reason, Until string
+	Tier                      int
+	Tests                     []string
+}
+```
+
+Build tag per tier: 1 = none, 2 = `e2e` (and the policy matrix's `run.sh` case names for J7.2 and J15.1), 3 = `journeys`.
+
+### Method signatures
+```go
+// package catalog
+func Load(r io.Reader) (*Catalog, error)
+func (c *Catalog) Validate(index TestIndex, specJourneys []string) []error
+func SpecJourneyIDs(spec io.Reader) ([]string, error)   // reads the spec's Journeys table
+func RenderCoverage(c *Catalog, w io.Writer) error       // docs/ci/coverage.md
+func RenderSummary(c *Catalog, pins Pins, results Results, w io.Writer) error
+
+type TestIndex interface{ Has(tier int, name string) bool }
+func NewSourceIndex(root string) (*SourceIndex, error)   // go/parser over *_test.go, by build tag; run.sh case names for tier 2 policy
+
+type Pins map[string]string
+func LoadPins(r io.Reader) (Pins, error)
+type Results map[string]string                           // check id -> pass | fail | skip, from go test -json
+```
+
+### Program layout
+```text
+~ .github/workflows/ci.yml            tier1, tier2-e2e, tier2-policy; adds merge_group, tags, dispatch
++ .github/workflows/journeys.yml      tier3
++ ci/pins.env                         all pins
+~ Makefile                            sources pins; coverage-doc, journeys-test; policy-test K8S_VERSION
+~ Dockerfile                          ARG GO_BUILDER_IMAGE
+~ hack/kind.sh                        reads pins
+~ test/e2e/setup.sh                   reads pins; Keycloak replaces JWKS server
++ test/e2e/fixtures/keycloak/         realm import, Deployment, Service, Certificate
+~ test/e2e/helpers_test.go            tokens from Keycloak direct grant
+~ test/e2e/e2e_test.go                network test control target
+~ test/policy/run-all.sh              reads pins; one version via K8S_VERSION
++ test/journeys/catalog.yaml
++ test/journeys/catalog/              package catalog + catalog_test.go (Tier 1)
++ test/journeys/cmd/summary/main.go   writes $GITHUB_STEP_SUMMARY (follows cmd/<binary> under the test tree)
++ test/journeys/gitops/user-secrets.yaml   Argo CD Application for add-software-pack
++ test/journeys/nebari_test.go        //go:build journeys; P3.1, J1.3, later J10.1, J13.1, J14.2, J22.2
++ docs/ci/coverage.md                 generated
+~ docs/architecture/contracts.md      pins file, catalog, check names
+```
+
+### Call stacks
+```text
+Production (Tier 1, every event):
+  ci.yml tier1
+    → load ci/pins.env into $GITHUB_ENV
+    → golangci-lint (GOLANGCI_LINT_VERSION) run
+    → make test
+      → go test ./... -race (includes test/journeys/catalog)
+        → catalog.Load, SourceIndex, SpecJourneyIDs → Validate
+        → coverage.md freshness, pin cross-checks, workflow secret scan
+    → summary (go run ./test/journeys/cmd/summary --tier 1)
+
+Production (Tier 2):
+  ci.yml tier2-e2e
+    → make e2e-up (image-load; setup.sh: kind, Calico, cert-manager, trust-manager, NIC CA, Keycloak, chart)
+    → make e2e-test (go test -tags e2e -json)
+    → summary --tier 2 --results <json>
+  ci.yml tier2-policy (matrix over POLICY_K8S_VERSIONS)
+    → make policy-test K8S_VERSION=<v>
+
+Production (Tier 3, merge_group / tag / dispatch):
+  journeys.yml tier3
+    → resolve latest NIC release; compare with NIC_REQUIRED_COMMIT → BLOCKING
+    → action-nebari-sandbox (kind, NIC local provider)
+    → docker build; kind load into kind-<cluster-name>
+    → add-software-pack (chart from checkout → GitOps dir → root App-of-Apps → Argo CD)
+    → convergence check (all Applications Synced/Healthy)
+    → go test -tags journeys ./test/journeys/... -json
+      → Keycloak admin API (realm admin password output) creates test users
+      → management API via port-forward; resolve from test pods
+    → summary --tier 3 (NIC tag, BLOCKING, timing-report, resource-summary)
+```
+
+### Component trees and DI
+`catalog.Validate` takes a `TestIndex` interface; production passes `NewSourceIndex(repoRoot)`, tests pass a fake index. `RenderSummary` takes `Pins` and `Results` values, built by `cmd/summary` from `ci/pins.env` and `go test -json` output. The journey tests in `test/journeys` take their endpoints and credentials from env set by the workflow, the same way `test/e2e` reads `.kube/e2e`.
+
+### Test approach and seams
+| Boundary | Seam | Real/fake | Level | Proves |
+|---|---|---|---|---|
+| Catalog vs test sources | `TestIndex` | fake in table tests; real `SourceIndex` over the repo in one test | unit (Tier 1) | covered checks name real tests; gaps carry reasons |
+| Spec journeys vs catalog | `SpecJourneyIDs` | real spec file | unit (Tier 1) | no journey is missing from the catalog |
+| Pins vs Go constant, Dockerfile, workflow refs | `LoadPins` | real files | unit (Tier 1) | the pins file is the single source |
+| Summary rendering | `RenderSummary` with fixed Pins and Results | fake inputs | unit (Tier 1) | summary lists commit, every pin, NIC tag, statuses |
+| Service vs Keycloak (Tier 2) | OIDC issuer URL | real Keycloak | e2e on kind | real token path for J1.1, J7.1 |
+| Service vs real Nebari (Tier 3) | sandbox kubeconfig and outputs | real NIC release | journeys | P3.1, J1.3 and later Tier 3 checks |
+| NIC containment gate | GitHub compare API | real; exercised by one `workflow_dispatch` before and after a qualifying release | manual, recorded in the report | the gate flips by itself |
+
+## Journeys
+
+The definition of done for the CI work itself (IDs C1...C8, separate from the service's J1...J22). Evidence is filled in at the CI slice's checkpoint.
+
+| # | Item | Proof | Check method | Evidence |
+|---|------|-------|--------------|----------|
+| C1 | A PR from a fork gets every required check to a result without any repo secret | A fork PR shows `tier1`, `tier2-e2e` and the three `tier2-policy` checks passing and `tier3` skipped; the catalog test fails on a workflow that reads `secrets.` other than `GITHUB_TOKEN` | automated: catalog test table case; narrated: checks list of a real fork PR | |
+| C2 | A reviewer can tell from any job summary what was tested against what | Each tier's summary shows the commit SHA, every pin from `ci/pins.env`, and per check pass/fail or its not-covered reason; Tier 3 adds the NIC tag, `BLOCKING`/`NON-BLOCKING`, timing and resource reports | automated: `RenderSummary` table test; narrated: screenshots of real summaries from all three tiers | |
+| C3 | A gap cannot pass as covered | Tier 1 fails on each of: a `covered` check naming a missing test, a journey removed from the catalog, a missing reason, a stale `docs/ci/coverage.md`, a pin out of sync with the Go constant, the Dockerfile or the sandbox ref | automated: catalog table tests, one case per failure | 2026-11-25: `go test ./test/journeys/catalog -run 'TestValidate\|TestPinsMatchSources\|TestScanWorkflowSecrets' -v` -> 36 PASS lines (one table row per failure case), 0 FAIL; `make coverage-doc && git diff --exit-code docs/ci/coverage.md` -> no diff |
+| C4 | Changing a pin changes it everywhere | Editing `CALICO_VERSION` in `ci/pins.env` alone changes what `make e2e-up` installs; no pinned version string appears outside `ci/pins.env` except the three cross-checked ones | automated: catalog test grep; narrated: `setup.sh` log line after the edit | 2026-11-25: `CALICO_VERSION=v3.32.2` set in `ci/pins.env` only, `make e2e-up` logged `==> installing Calico v3.32.2`, then reverted; the catalog copy scan (`TestPinsMatchSources`) passes |
+| C5 | Tier 2 runs the commit's own image against real Keycloak and the policy matrix | `tier2-e2e` obtains tokens from Keycloak (no JWKS stand-in left in `test/e2e`); the three `tier2-policy` jobs each report their Kubernetes version | narrated: CI run links and log excerpts | |
+| C6 | Tier 3 installs our chart through Argo CD on NIC and runs journeys | The one-off run on `de81b11` passes `P3.1` and `J1.3` with the Application `Synced`/`Healthy` and the certificate issued by `nebari-ca-issuer`; a dispatch run on the latest release reports `NON-BLOCKING` and exits 0 | narrated: both run links and summaries | |
+| C7 | Tier 3 starts blocking by itself once NIC ships #787 | The gate says non-blocking for v0.18.0 and blocking for a tag containing `de81b11`; in `merge_group` while non-blocking, `tier3` passes with the skip line. The `merge_group` half is verified after the user turns the queue on | automated: gate table test with a fake compare API; narrated: a `merge_group` run after turn-on | |
+| C8 | The user has the turn-on report before anything is turned on | Report covers merge queue and proposed ruleset, stacking behaviour, measured Tier 3 time and size, queue throughput and batch size, runner fit; the `main` ruleset is unchanged | narrated: report in the PR; `gh api repos/nebari-dev/nebari-user-secrets/rulesets` output before and after | |
+
 ## Global Constraints
 
 - Go module `github.com/nebari-dev/nebari-user-secrets`, `go 1.26`; pins exactly as in Tech Stack. Kubernetes 1.30 or later.
@@ -52,6 +368,7 @@
 - Files under `/var/run/nebari/secrets` mode `0440`; `.status` is `ok <count>` or `error <code> <detail>`; wrapper at `/var/run/nebari/user-secrets-bin/user-secrets-env`; memory `emptyDir` `sizeLimit: 1Mi`. Reserved volume and container name prefix `user-secrets-`.
 - No value, token or data key in any log, audit line, error message, response or pod spec.
 - No AI attribution in commits or PRs.
+- CI (Slices 7-8): no workflow reads `secrets.*` other than `secrets.GITHUB_TOKEN`; every external version lives only in `ci/pins.env` (cross-checked: `guard.PauseImage`, the Dockerfile `GO_BUILDER_IMAGE` default, `action-nebari-sandbox` refs); required check names exactly `tier1`, `tier2-e2e`, `tier2-policy (<version>)`, `tier3`; Tier 3 resolves the latest NIC release and never a NIC branch or commit, except the one-off proof run on a scratch branch that is never merged; the `main` ruleset is not changed.
 
 ## Deviations from the spec (approve at plan review)
 
@@ -67,8 +384,10 @@
 1. **Keycloak rotates its signing key mid-session.** A token signed with a new `kid` must verify without a restart. Test `TestVerifyAfterKeyRotation` in Task 8.
 2. **A `sub` that is not a UUID** (`f:ldap-id:alice`). Store, seal and resolve must work. Test `TestNonUUIDSub` in Task 4 and `TestSealOpenNonUUIDSub` in Task 2.
 3. **Two browser tabs save at once.** Both writes must persist; the second retries on a `resourceVersion` conflict and never drops the first. Test `TestConcurrentUpsertsBothPersist` in Task 9.
-4. **An init container that runs again** (pod sandbox restart) after a secret was deleted. The deleted file must disappear, not linger from the first run. Test `TestWriteAllRemovesStale` in Task 22.
+4. **An init container that runs again** (pod sandbox restart) after a secret was deleted. The deleted file must disappear, not linger from the first run. Test `TestWriteAllRemovesStale` in Task 29.
 5. **A record at the size limit.** Values of 32768 bytes grow to about 43.7 KB once sealed and base64-encoded, so about 11 fit; acceptance must follow the encoded size, never a plaintext estimate, and the stored record must never exceed 524288 bytes. Test `TestLimitCountsEncodedSize` in Task 9.
+6. **The merge queue while Tier 3 is non-blocking.** `tier3` must still report success, not stay pending or skipped-forever, or every queued PR waits. Proven by the release-run and fork-PR rows of Slice 8's Validation and the `merge_group` skip-line case in `TestRenderSummary` (Task 25).
+7. **The NIC gate on a GitHub API hiccup.** A 403 rate limit or 5xx must fail the gate, not silently pick blocking or non-blocking. `TestDecide` and `TestGitHubAPI` in Task 26.
 
 ---
 
@@ -82,11 +401,13 @@
 | 4 | Installable service | nebari-user-secrets | nebari-user-secrets#5 | Slice 3 | 1, 9, 19 |
 | 5 | Admission guard verification | nebari-user-secrets | nebari-user-secrets#6 | Slice 4 | 12, 15 |
 | 6 | Resolve | nebari-user-secrets | nebari-user-secrets#7 | Slice 5 | 7, 8, 11, 12, 17 |
-| 7 | Init container and env wrapper | nebari-user-secrets | nebari-user-secrets#8 | Slice 6 | 13, 17 |
-| 8 | Injector | nebari-user-secrets | nebari-user-secrets#9 | Slice 7 | 14, 22, 7, 6 |
-| 9 | Release and operations | nebari-user-secrets | nebari-user-secrets#10 | Slice 8 | 21 |
+| 7 | CI tiers 1 and 2 with a journey catalog | nebari-user-secrets | nebari-user-secrets#8 | Slice 6 | 1, 7 |
+| 8 | Tier 3 on a real Nebari and the turn-on report | nebari-user-secrets | nebari-user-secrets#9 | Slice 7 | 1 |
+| 9 | Init container and env wrapper | nebari-user-secrets | nebari-user-secrets#10 | Slice 8 | 13, 17 |
+| 10 | Injector | nebari-user-secrets | nebari-user-secrets#11 | Slice 9 | 14, 22, 7, 6 |
+| 11 | Release and operations | nebari-user-secrets | nebari-user-secrets#12 | Slice 10 | 21 |
 
-Merge order: nebari-user-secrets#1 (design) -> #2 -> #3 -> #4 -> #5 -> #6 -> #7 -> #8 -> #9 -> #10. Each PR's base is the previous slice's branch.
+Merge order: nebari-user-secrets#1 (design) -> #2 -> #3 -> #4 -> #5 -> #6 -> #7 -> #8 -> #9 -> #10 -> #11 -> #12. Each PR's base is the previous slice's branch.
 
 ---
 
@@ -377,7 +698,7 @@ Task reviews: Task 11 approved after round 1 (own JWKS key set because go-oidc v
 
 **Files:** Create `Dockerfile`, `.dockerignore`; Modify `Makefile` (`image`, `IMG ?= ghcr.io/nebari-dev/nebari-user-secrets:dev`)
 
-- [ ] **Step 1:** Multi-stage like nebari-operator's `Dockerfile` (`golang:1.26` builder, `CGO_ENABLED=0`, both binaries to `/`, `gcr.io/distroless/static:nonroot`, `USER 65532:65532`, `ENTRYPOINT ["/user-secrets"]`). `cmd/user-secrets-init` is a stub `main` printing usage until Slice 7.
+- [ ] **Step 1:** Multi-stage like nebari-operator's `Dockerfile` (`golang:1.26` builder, `CGO_ENABLED=0`, both binaries to `/`, `gcr.io/distroless/static:nonroot`, `USER 65532:65532`, `ENTRYPOINT ["/user-secrets"]`). `cmd/user-secrets-init` is a stub `main` printing usage until Slice 9.
 - [ ] **Step 2: Run** `make image`: Expected: image builds; `docker run --rm $IMG --help` prints usage.
 
 ### Task 13: Helm chart
@@ -460,7 +781,7 @@ Task reviews: Task 15 approved (Minor round; kustomize test found an over-indent
 **Files:** Create `internal/guard/watch.go`, `internal/guard/probe.go`, `internal/guard/probe_test.go`
 
 **Interfaces:**
-- Produces: `func NewInformerWatcher(c kubernetes.Interface, namespace string) *InformerWatcher` implementing the spec's `AdmissionWatcher` (field-selector informers by name); `func NewDryRunProber(c kubernetes.Interface, namespace, pauseImage string) *DryRunProber` implementing `Prober`; `type ProbeResult struct{ LabelledDeniedByB, UnlabelledDeniedByA, CanaryAdmitted, Inconclusive bool; Detail string }`. Probe pods are `restricted`-compliant with the pause image pinned by digest (`registry.k8s.io/pause:3.10@sha256:…`, digest filled at implementation time from `crane digest`), and are recognised by the policies' exact messages from `cluster/policies.yaml`.
+- Produces: `func NewInformerWatcher(c kubernetes.Interface, namespace string) *InformerWatcher` implementing the spec's `AdmissionWatcher` (field-selector informers by name); `func NewDryRunProber(c kubernetes.Interface, namespace, pauseImage string) *DryRunProber` implementing `Prober`; `type ProbeResult struct{ LabelledDeniedByB, UnlabelledDeniedByA, CanaryAdmitted, Inconclusive bool; Detail string }`. Probe pods are `restricted`-compliant with the pause image pinned by digest (`registry.k8s.io/pause:3.10sha256:…`, digest filled at implementation time from `crane digest`), and are recognised by the policies' exact messages from `cluster/policies.yaml`.
 
 - [ ] **Step 1: Failing tests** with fake clientset reactors on `create pods` (dry-run): B's message → `LabelledDeniedByB`; any other error → `Inconclusive`; canary error → `CanaryAdmitted == false`; `TestProbePodsRestricted` (each probe pod passes pod-security-admission `restricted`).
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement.** **Step 4: Run**: PASS.
@@ -547,8 +868,8 @@ ok test/e2e 56.748s
 $ make e2e-test   -> 15/15 PASS (118.1 s, rerun after Task 21b), incl. TestServiceReadyUnderPolicy (now asserts both ingress rules exactly) and TestDurabilityThroughResolve
 $ GOTOOLCHAIN=go1.26.11 make lint -> 0 issues;  go vet ./... -> no output
 ```
-Journeys: 7 partial: on kind, user B's labelled pod resolves only B's secrets and none of A's, an unlabelled pod with its projected token gets 403 `not_annotated`, and A's management token at resolve gets 401 `not_pod_bound` (`TestCrossUserIsolation`); the API-server refusals (non-creator, label or annotation changes, and the rest) are the policy matrix in `test/policy` (Slice 5). The two-real-Keycloak-users version waits for the CI slice's Keycloak. 8 covered: (a) `TestPodVerifier` (dask-annotated pod as the notebook SA gets 403), (b) `TestResolveFiltersByApp`, (c) on kind, a user's Keycloak management token at resolve gets 401 `not_pod_bound` (`TestCrossUserIsolation`; the `internal/httpapi` case proves only the 401 mapping); a token with `user-secrets` in `aud` is not tested yet, (d) unchanged from Slice 3. 9 re-checked through resolve: after `rollout restart` and `helm upgrade` resolve returns the stored value. 11 partial: `secret_read` lines carry owner_sub, reader_sub, secret, app, pod, pod_uid, sa, guard, and each denial writes exactly one `resolve_denied` with its reason, with no value or token substrings (unit table `TestResolveHandler`; on kind `TestResolveDeniedAudit` checks one reason, `not_annotated`); the narrated `kubectl logs` excerpt waits for a dev cluster. 12 delivery half on kind: with binding B at `[Warn]` resolve answers 503 `guard_not_verified`; a labelled pod created while B was at `[Warn]` is refused 403 `pod_predates_guard` after restore, and a pod created afterwards resolves (`TestResolveGuard`); the notebook `.status` half needs Slice 7. 17 partial: an unregistered SA records `not_registered` as the app's last failure and a pod that fails verification changes no user's status (unit: `TestResolveHandler`, `TestRecordDeliveryKeepsOtherOutcome`; not yet read back through `GET /api/v1/secrets`); soft and strict init behaviour is Slice 7. 20: copying A's sealed entry into B's record makes resolve for B fail with `decrypt_failed` and return nothing of A's (`TestDecryptFailedOnKind`).
-Found on the real cluster: an HTTP/2 client kept waiting until the post-response status write returned, so the resolve server is HTTP/1.1 only (`TestTLSServerProtocols`) and recorded responses carry `Content-Length`. A pod created within about 30 s after `verifiedSince` moves is refused `pod_predates_guard` for its lifetime (documented in `contracts.md`; Slice 7's init container will see it).
+Journeys: 7 partial: on kind, user B's labelled pod resolves only B's secrets and none of A's, an unlabelled pod with its projected token gets 403 `not_annotated`, and A's management token at resolve gets 401 `not_pod_bound` (`TestCrossUserIsolation`); the API-server refusals (non-creator, label or annotation changes, and the rest) are the policy matrix in `test/policy` (Slice 5). The two-real-Keycloak-users version waits for the CI slice's Keycloak. 8 covered: (a) `TestPodVerifier` (dask-annotated pod as the notebook SA gets 403), (b) `TestResolveFiltersByApp`, (c) on kind, a user's Keycloak management token at resolve gets 401 `not_pod_bound` (`TestCrossUserIsolation`; the `internal/httpapi` case proves only the 401 mapping); a token with `user-secrets` in `aud` is not tested yet, (d) unchanged from Slice 3. 9 re-checked through resolve: after `rollout restart` and `helm upgrade` resolve returns the stored value. 11 partial: `secret_read` lines carry owner_sub, reader_sub, secret, app, pod, pod_uid, sa, guard, and each denial writes exactly one `resolve_denied` with its reason, with no value or token substrings (unit table `TestResolveHandler`; on kind `TestResolveDeniedAudit` checks one reason, `not_annotated`); the narrated `kubectl logs` excerpt waits for a dev cluster. 12 delivery half on kind: with binding B at `[Warn]` resolve answers 503 `guard_not_verified`; a labelled pod created while B was at `[Warn]` is refused 403 `pod_predates_guard` after restore, and a pod created afterwards resolves (`TestResolveGuard`); the notebook `.status` half needs Slice 9. 17 partial: an unregistered SA records `not_registered` as the app's last failure and a pod that fails verification changes no user's status (unit: `TestResolveHandler`, `TestRecordDeliveryKeepsOtherOutcome`; not yet read back through `GET /api/v1/secrets`); soft and strict init behaviour is Slice 9. 20: copying A's sealed entry into B's record makes resolve for B fail with `decrypt_failed` and return nothing of A's (`TestDecryptFailedOnKind`).
+Found on the real cluster: an HTTP/2 client kept waiting until the post-response status write returned, so the resolve server is HTTP/1.1 only (`TestTLSServerProtocols`) and recorded responses carry `Content-Length`. A pod created within about 30 s after `verifiedSince` moves is refused `pod_predates_guard` for its lifetime (documented in `contracts.md`; Slice 9's init container will see it).
 Found in the fresh-eyes review: the single Kubernetes client ran on client-go's default 5 req/s, burst 10 per API group (client-go v0.35.0 `rest/config.go:47-48`), so a pod-start burst queued and resolve traffic could delay the guard's probes into `unknown`. Task 21b (user-approved): the guard has its own client; the store, master key and pod verification share one limiter set by `kubernetes.qps`/`burst` (default 50/100); each resolve's Kubernetes calls are bounded by 20 s and answer 503 `kubernetes_unavailable` on timeout.
 CI: the `ci` job had failed on every PR since #2 because golangci-lint-action's prebuilt v2.4.0 binary is built with Go 1.25 and refuses this Go 1.26 module (lint was only ever run locally). `ci.yml` now sets `install-mode: goinstall`, so the same v2.4.0 is built with go.mod's toolchain.
 Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved after fix round 1 (Content-Length, owner mismatch maps to `decrypt_failed`, token pod identity on `resolve_denied`, HTTP/1.1-only ruling). Task 21 approved with no Critical or Important findings; 6 Minor parked for the final review. Task 21b approved, 4 Minor parked. Fresh-eyes over the whole slice: 1 Important (the throttling, fixed by Task 21b), 9 Minor parked or fixed (evidence wording).
@@ -557,11 +878,207 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 
 ---
 
-## Slice 7: Init container and env wrapper
-**Goal:** A pod with the init container gets its secrets as exact-byte files, optionally as environment variables, and a readable reason when delivery fails.
-**Repos / branches:** nebari-user-secrets: `feat/us-07-init` (base: `feat/us-06-resolve`)
-**PRs:** nebari-user-secrets#8 "user-secrets-init and user-secrets-env" (links spec + plan)
+## Slice 7: CI tiers 1 and 2 with a journey catalog
+**Goal:** Every PR push and merge-queue entry runs lint, unit and chart tests, the kind suite against real Keycloak and the policy matrix per Kubernetes version, all from one pins file, and the catalog check fails any gap that claims to be covered.
+**Repos / branches:** nebari-user-secrets: `feat/us-07-ci` (base: `feat/us-06-resolve`)
+**PRs:** nebari-user-secrets#8 "CI tiers 1 and 2 with a journey catalog" (links both specs + plan)
 **Depends on:** Slice 6
+**Contracts touched:** Pins file `ci/pins.env`, Journey catalog `test/journeys/catalog.yaml`, Required check names, Make targets for the kind tiers, Static JWKS server in `e2e-keycloak` (expand), Static JWKS server in `e2e-keycloak` (migrate), Static JWKS server in `e2e-keycloak` (contract)
+**Docs updated:** docs/architecture/contracts.md, docs/architecture/patterns.md (Bash cluster harnesses behind Make targets, External versions pinned once, Vendored upstream files with SOURCE and drift check), docs/ci/coverage.md
+**Advances journeys:** 1, 7
+**Advances CI journeys:** C1 (catalog half), C2 (tiers 1 and 2), C3, C4, C5
+**Validation:**
+| Step | Command / action | Expected |
+|---|---|---|
+| unit | `go test ./... -race -cover` | pass, including `test/journeys/catalog` (`TestRepoCatalog` validates the real catalog, spec, test sources and workflows) |
+| lint | `GOTOOLCHAIN=go1.26.11 make lint` | 0 issues |
+| gap cases (C3) | `go test ./test/journeys/catalog -run 'TestValidate|TestPinsMatchSources|TestScanWorkflowSecrets' -v` | each failure case in C3 and C1 is its own passing table row |
+| coverage doc | `make coverage-doc && git diff --exit-code docs/ci/coverage.md` | no diff |
+| e2e | `make e2e-up && make e2e-test` | all pass; `grep -rn 'jwks\|KID=' test/e2e` finds nothing; setup log shows Keycloak ready |
+| policy | `make policy-test K8S_VERSION=v1.30.13` (repeat for v1.32.11, v1.34.3) | `RESULT: ... 0 failed` for each |
+| pin edit (C4) | set `CALICO_VERSION=v3.32.2` in `ci/pins.env` only, `make e2e-up`, then revert | setup log reads `installing Calico v3.32.2` |
+| CI | push the branch and open PR #8 | checks `tier1`, `tier2-e2e`, `tier2-policy (v1.30.13)`, `tier2-policy (v1.32.11)`, `tier2-policy (v1.34.3)` pass; each summary shows the SHA, every pin and the tier's check statuses |
+
+### Task 22: Pins file and its readers
+
+**Files:**
+- Create: `ci/pins.env`, `test/journeys/catalog/pins.go`, `test/journeys/catalog/pins_test.go`
+- Modify: `Makefile`, `Dockerfile`, `hack/kind.sh`, `test/e2e/setup.sh`, `test/policy/run-all.sh`, `.github/workflows/ci.yml`
+
+**Interfaces:**
+- Produces: package `catalog` (`github.com/nebari-dev/nebari-user-secrets/test/journeys/catalog`): `type Pins map[string]string`; `func LoadPins(r io.Reader) (Pins, error)`; `func (p Pins) Require(keys ...string) error`.
+
+- [ ] **Step 1: Write `TestLoadPins`** (table): comments and blank lines are skipped; `KEY=value` parses; a duplicate key, a line without `=`, a lowercase key, and a value containing `$(`, a backtick or `${` each return an error naming the line number; `POLICY_K8S_VERSIONS=v1.30.13 v1.32.11 v1.34.3` keeps its spaces. `Require("MISSING")` errors with the key name.
+- [ ] **Step 2: Write `TestPinsMatchSources`** against the real repo: `PAUSE_IMAGE` equals `guard.PauseImage`; the Dockerfile's `ARG GO_BUILDER_IMAGE=` default equals the pin; every `nebari-dev/action-nebari-sandbox@<ref>` in `.github/workflows/*.yml` equals `SANDBOX_ACTION_REF` (none until Slice 8); no file outside `ci/pins.env`, `docs/`, `*.md`, `go.sum`, `test/policy/results/` and `test/e2e/fixtures/nic/` contains any pin value except those three cross-checked sources. Run: FAIL (no `ci/pins.env`).
+- [ ] **Step 3: Write `ci/pins.env`** with exactly the keys in the spec's Pins table (`KEYCLOAK_IMAGE` arrives in Task 24), each preceded by a `#` line naming its source. `GO_BUILDER_IMAGE` is `golang:1.26@sha256:<digest>` read with `docker buildx imagetools inspect golang:1.26` (the multi-arch index digest).
+- [ ] **Step 4: Readers.** Scripts `set -a; source "$ROOT/ci/pins.env"; set +a` and drop their own version variables. `run-all.sh` loops over `${K8S_VERSION:-$POLICY_K8S_VERSIONS}`. Makefile: `include ci/pins.env` and `export`, `image-load`/`image` pass `--build-arg GO_BUILDER_IMAGE=$(GO_BUILDER_IMAGE)`, `policy-test` passes `K8S_VERSION`. Dockerfile: `ARG GO_BUILDER_IMAGE=<pin>` before `FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS builder`. `ci.yml`: a first step in each job appends `grep -v '^#' ci/pins.env | grep .` to `$GITHUB_ENV`; helm, kind and golangci-lint versions read `env.*`.
+- [ ] **Step 5: Run** `go test ./test/journeys/catalog -race -v`, `make e2e-up && make e2e-test`, `make policy-test K8S_VERSION=v1.34.3`: PASS.
+
+### Task 23: Journey catalog, validator and coverage doc
+
+**Files:**
+- Create: `test/journeys/catalog.yaml`, `test/journeys/catalog/{catalog.go,index.go,spec.go,coverage.go,workflows.go,catalog_test.go}`, `docs/ci/coverage.md`
+- Modify: `Makefile` (`coverage-doc`)
+
+**Interfaces:**
+- Consumes: `Pins`, `LoadPins` (Task 22).
+- Produces: `Catalog`, `Feature`, `Journey`, `Check` exactly as the CI spec's Data models (json tags `id`, `title`, `source`, `status`, `feature`, `checks`, `tier`, `tests`, `reason`, `until`, `platform_checks`); `func Load(r io.Reader) (*Catalog, error)` (sigs.k8s.io/yaml, unknown fields rejected); `type TestIndex interface{ Has(tier int, name string) bool }`; `func NewSourceIndex(root string) (*SourceIndex, error)`; `func (c *Catalog) Validate(index TestIndex, specJourneys []string) []error`; `func SpecJourneyIDs(spec io.Reader) ([]string, error)`; `func RenderCoverage(c *Catalog, w io.Writer) error`; `func ScanWorkflowSecrets(files map[string][]byte) []error`.
+
+- [ ] **Step 1: Write `TestValidate`** (table, fake `TestIndex`): a valid catalog gives no errors; each of these gives exactly one error naming the check or journey id: `covered` check whose test the index lacks; `covered` with no tests; `planned` or `not-covered` with empty `reason`; `planned` with empty `until`; a spec journey id absent from the catalog; a catalog journey absent from the spec; an `active` feature with no journey; a journey naming an unknown feature; tier outside 1-3; a duplicate check id.
+- [ ] **Step 2: Write `TestSourceIndex`** over a temp tree: tier 1 finds `func TestX(t *testing.T)` in `_test.go` files with no `//go:build` line; tier 2 finds tests in files with `//go:build e2e` or `//go:build integration`, and a name of the form `run.sh:<label>` when `test/policy/run.sh` contains `<label>`; tier 3 finds tests in files with `//go:build journeys`; a test in the wrong tier's file is not found.
+- [ ] **Step 3: Write `TestScanWorkflowSecrets`**: `${{ secrets.FOO }}` errors naming file and line; `${{ secrets.GITHUB_TOKEN }}` and `github.token` pass.
+- [ ] **Step 4: Write `TestRepoCatalog`**: loads `test/journeys/catalog.yaml`, `SpecJourneyIDs` of `docs/design/user-secrets-spec.md`, `NewSourceIndex` of the repo root and every `.github/workflows/*.yml`; asserts no errors from `Validate` and `ScanWorkflowSecrets`, and that `docs/ci/coverage.md` equals `RenderCoverage` output byte for byte (message: run `make coverage-doc`). Run all four: FAIL (no implementation).
+- [ ] **Step 5: Implement** the package; `SourceIndex` uses `go/parser` with `parser.ParseComments` and reads the `//go:build` constraint via `go/build/constraint`.
+- [ ] **Step 6: Write `catalog.yaml`** from the CI spec's Features table and Journeys-and-checks table, statuses as at Slice 7: `J1.3` and `P3.1` are `planned`, `until: Slice 8`, tests `TestManagementOnNebari` and `TestChartConvergesOnNebari`; every `covered` check names the existing test functions (for example J1.1 `TestManagementCreateList`, J7.1 `TestCrossUserIsolation`, J7.2 and J15.1 `run.sh:<section labels>`, J9.1 `TestDurabilityAcrossRestart` and `TestDurabilityThroughResolve`). `make coverage-doc` runs `go run ./test/journeys/cmd/coverage > docs/ci/coverage.md` (a 10-line `main` calling `RenderCoverage`; add the file). Generate the doc.
+- [ ] **Step 7: Run** `go test ./test/journeys/... -race -v`: PASS. Temporarily rename `TestCrossUserIsolation` and confirm `TestRepoCatalog` fails naming `J7.1`; restore.
+
+### Task 24: Real Keycloak in the kind tier
+
+**Files:**
+- Create: `test/e2e/fixtures/keycloak/realm.json`, `test/e2e/fixtures/keycloak/keycloak.yaml`
+- Delete: `test/e2e/fixtures/jwks.yaml`
+- Modify: `ci/pins.env` (`KEYCLOAK_IMAGE`), `test/e2e/setup.sh`, `test/e2e/fixtures/values.yaml`, `test/e2e/helpers_test.go`, `test/e2e/e2e_test.go`, `test/journeys/catalog.yaml` if a test name changes
+
+**Interfaces:**
+- Consumes: pins (Task 22).
+- Produces: e2e helper `func userToken(t *testing.T, user, client string) string` (password grant), replacing the local-key token minter; users `alice` and `bob`, clients `user-secrets-e2e` (public, direct grants, the service's `clientID`) and `other-client` (direct grants) in realm `nebari`.
+
+- [ ] **Step 1: Pin `KEYCLOAK_IMAGE`** to the Keycloak version NIC v0.18.0 deploys (read `pkg/argocd/templates/apps/keycloak*.yaml` at tag `v0.18.0` with `gh api`), as `quay.io/keycloak/keycloak:<tag>@sha256:<digest>`; the comment names the file read.
+- [ ] **Step 2: Fixtures.** `realm.json` (import at start, `--import-realm`); `keycloak.yaml`: Deployment in `e2e-keycloak` (`start-dev` with `KC_HOSTNAME=https://keycloak.e2e-keycloak.svc:8443` and `KC_HOSTNAME_STRICT=true` so `iss` is the in-cluster URL however the token is fetched), Service on 8443, and a cert-manager `Certificate` from NIC's CA issuer, so the service trusts Keycloak through the trust bundle as in production. Test passwords live in `realm.json`; they are fixture values, not secrets.
+- [ ] **Step 3: `setup.sh`** replaces `gen_key` and `install_jwks` with `install_keycloak` (apply, wait for Ready, then poll the realm's `.well-known/openid-configuration` from a pod until it answers). `values.yaml`: issuer `https://keycloak.e2e-keycloak.svc:8443/realms/nebari`, JWKS URL that realm's `protocol/openid-connect/certs`, `clientID: user-secrets-e2e`.
+- [ ] **Step 4: Helpers.** `userToken` requests `grant_type=password` from inside the cluster, using the same in-cluster exec method the management tests already use to reach the service. Every caller of the old minter moves to it: `TestManagementRejectsOtherClient` uses `other-client`, and `TestCrossUserIsolation` uses `alice` and `bob`. The network test's control target becomes `keycloak.e2e-keycloak.svc:8443`.
+- [ ] **Step 5: Run** `make e2e-up && make e2e-test`: all pass. `grep -rn 'jwks\|KID=' test/e2e` returns nothing. `go test ./test/journeys/...` passes.
+
+### Task 25: Tier workflows and job summaries
+
+**Files:**
+- Create: `test/journeys/catalog/summary.go`, `test/journeys/catalog/summary_test.go`, `test/journeys/cmd/summary/main.go`
+- Modify: `.github/workflows/ci.yml`, `internal/testkube/testkube.go`, `test/policy/run.sh`, `test/policy/run-all.sh`, `docs/architecture/contracts.md`, `docs/architecture/patterns.md`
+
+**Interfaces:**
+- Consumes: `Catalog`, `Pins` (Tasks 22-23).
+- Produces: `type Results map[string]string` (test name -> `pass`|`fail`|`skip`); `func ParseTestJSON(r io.Reader) (Results, error)` (top-level tests only, from `go test -json`); `type NICInfo struct{ Tag, Commit string; Blocking bool }`; `type SummaryInput struct{ Tier int; Commit, QueueHead, QueueBase string; Results Results; NIC *NICInfo; Timing, Resources, Note string }`; `func RenderSummary(c *Catalog, pins Pins, in SummaryInput, w io.Writer) error`. `cmd/summary` flags `--tier --commit --queue-head --queue-base --results --nic-tag --nic-commit --blocking --timing --resources --note`, appends to `$GITHUB_STEP_SUMMARY`.
+
+- [ ] **Step 1: Write `TestRenderSummary`** (table): output contains the commit, and for `merge_group` input the queue head and base; a row for every pin key with its value; for the tier, each covered check with `pass`/`fail` from Results, and `not run` when its test is absent from Results; every `planned` and `not-covered` check of that tier with its reason; tier 3 input adds the NIC tag and commit and `BLOCKING` or `NON-BLOCKING`, and the timing and resource text verbatim; a `Note` (the `merge_group` skip line) is printed verbatim at the top. `TestParseTestJSON`: pass, fail, skip, and subtests ignored.
+- [ ] **Step 2: Run:** FAIL. **Step 3: Implement.** Markdown tables; nothing from the environment is read inside `RenderSummary`.
+- [ ] **Step 4: `ci.yml`.** Triggers `pull_request`, `merge_group`, `push: tags: ['v*']`, `workflow_dispatch`. Jobs: `pins` (outputs `k8s` = `POLICY_K8S_VERSIONS` as a JSON array); `tier1` (load pins, lint with `install-mode: goinstall`, `make test`, summary); `tier2-e2e` (`make e2e-up`, `go test -tags e2e ./test/e2e/... -json -count=1 -timeout 30m | tee e2e.json`, then `go test -tags integration ./internal/... -json -count=1 | tee integration.json` against the same cluster (`internal/testkube` reads the kubeconfig path from `USER_SECRETS_TEST_KUBECONFIG` when set, default `.kube/kind` unchanged; the job sets it to `.kube/e2e`), the existing failure dump, summary with `--results` given both files, merged); `tier2-policy` with `name: tier2-policy (${{ matrix.k8s }})`, matrix `fromJSON(needs.pins.outputs.k8s)`, `make policy-test K8S_VERSION=${{ matrix.k8s }}`, summary. Every summary step is `if: always()`. `permissions: contents: read`; no `secrets.` anywhere.
+- [ ] **Step 4b: Make the policy matrix fail.** Today it cannot: `run.sh` ends with `echo "RESULT: ..."` and exits 0 whatever `FAIL` is, and `run-all.sh` pipes each run into `tail` (losing its status) and `continue`s past a failed cluster create. `run.sh` ends with `exit $(( FAIL > 0 ))`; `run-all.sh` uses `set -o pipefail` for the run pipeline, records a failure for a failed cluster create or a non-zero run, still deletes the cluster and runs the remaining versions, and exits 1 at the end if any version failed. Prove it: temporarily invert one `expect` in `run.sh`, run `make policy-test K8S_VERSION=v1.34.3`, see exit 2 from make and `RESULT: 41 passed, 1 failed`; restore and see exit 0.
+- [ ] **Step 5: Docs.** `contracts.md` gets entries for Pins file `ci/pins.env`, Journey catalog `test/journeys/catalog.yaml`, Required check names (the five names, and that renaming one is a contract change) and the Make targets' `K8S_VERSION`. `patterns.md` gets the three promoted patterns with the CI spec's promoted wording, `Confirmed: 2026-11-24`.
+- [ ] **Step 6: Run** `go test ./test/journeys/... -race -v` and `GOTOOLCHAIN=go1.26.11 make lint`: PASS. The workflow itself is proven by the slice's CI validation row.
+
+**Evidence (2026-11-25, Go 1.26.11 toolchain; pins from `ci/pins.env`: kind us-e2e created fresh on kindest/node:v1.34.3, Calico v3.32.3, cert-manager v1.17.2, trust-manager v0.22.1, Keycloak 26.8.1 by digest, NIC templates at `de81b11`):**
+```
+$ go test ./... -race -cover          -> every package ok (test/journeys/catalog 95.7%), exit 0
+$ GOTOOLCHAIN=go1.26.11 make lint     -> 0 issues.
+$ go test ./test/journeys/catalog -run 'TestValidate|TestPinsMatchSources|TestScanWorkflowSecrets' -v
+--- PASS: TestValidate (0.00s)
+--- PASS: TestScanWorkflowSecrets (0.00s)
+--- PASS: TestPinsMatchSources (0.05s)
+  (36 PASS lines including every table row; 0 FAIL)
+$ make coverage-doc && git diff --exit-code docs/ci/coverage.md   -> no diff
+$ make e2e-down && make e2e-up        -> "creating kind cluster us-e2e (kindest/node:v1.34.3, no default CNI)" ...
+  "deploying Keycloak (quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e...) with the nebari test realm"
+  "waiting for the realm's discovery document from kc-client" ... "ready: KUBECONFIG=.../.kube/e2e", exit 0
+$ make e2e-test                        -> 15/15 top-level PASS, 0 FAIL, ok test/e2e 127.8s; 0 "lost connection to pod"
+$ grep -rn 'jwks\|KID=' test/e2e       -> only test/e2e/fixtures/values.yaml:12 keycloak.jwksURL (the chart key, pointing at Keycloak's certs endpoint)
+$ sed CALICO_VERSION=v3.32.2 in ci/pins.env only; make e2e-up   -> "==> installing Calico v3.32.2", exit 0; reverted, git diff ci/pins.env empty
+$ make policy-test K8S_VERSION=v1.30.13 -> RESULT: 42 passed, 0 failed (exit 0)
+$ make policy-test K8S_VERSION=v1.32.11 -> RESULT: 42 passed, 0 failed (exit 0)
+$ make policy-test K8S_VERSION=v1.34.3  -> RESULT: 42 passed, 0 failed (exit 0); all three transcripts in test/policy/results refreshed
+Task 25 Step 4b (implementer run): one expect inverted -> RESULT: 41 passed, 1 failed, make exit 2; restored -> 42 passed, exit 0
+$ go test -tags integration ./internal/... with USER_SECRETS_TEST_KUBECONFIG=.kube/e2e (implementer run) -> 144 pass, 0 fail
+CI (PR #8): pending, filled in after the first run.
+```
+Found during the slice: the guard e2e tests' port-forwards failed about 1 run in 12 with "lost connection to pod", already on Slice 6. With keep-alives off, each 500 ms poll's TLS close_notify reached the pod after the server had closed, so the pod sent a TCP reset; containerd v2.2.0 reports such a reset as a forward error, and client-go then closes the whole forward. The pod-pinned guard forwards now reuse one connection (0 failures in 12 runs on the investigation's loop, 6 of 6 after the fix, and the fresh-cluster run above); the management client through the Service keeps one connection per request. The policy matrix could never fail before Task 25 Step 4b (`run.sh` always exited 0 and `run-all.sh` piped into `tail`).
+Task reviews: Task 22 approved (0 Critical/Important). Task 23 approved; the catalog found the CI spec over-claiming coverage (J17, J20, J21 and integration tests no tier ran), corrected by ruling. Task 24 approved, plus fix round 1 (port-forward keep-alive). Task 25 approved, 7 Minor parked for the final review.
+
+**Checkpoint (controller, after the last task; implementers ignore):** run validation, paste evidence, open PR(s), STOP for go-ahead.
+
+---
+
+## Slice 8: Tier 3 on a real Nebari and the turn-on report
+**Goal:** Merge-queue, tag and manual runs install the chart through Argo CD on the latest released NIC and run the Nebari journeys, non-blocking until a NIC release contains #787 and blocking by itself after, and the user has a measured report before changing the ruleset.
+**Repos / branches:** nebari-user-secrets: `feat/us-08-tier3` (base: `feat/us-07-ci`)
+**PRs:** nebari-user-secrets#9 "Tier 3 journeys on Nebari and turn-on report" (links both specs + plan)
+**Depends on:** Slice 7
+**Contracts touched:** Required check names, Journey catalog `test/journeys/catalog.yaml`, Consumed: action-nebari-sandbox v3.0.0 inputs and outputs, Consumed: NIC root App-of-Apps reads `apps/*.yaml` in the GitOps dir, Consumed: NIC cluster CA and trust bundle
+**Docs updated:** docs/architecture/contracts.md, docs/ci/coverage.md, docs/ci/turn-on-report.md
+**Advances journeys:** 1
+**Advances CI journeys:** C1 (fork PR), C2 (tier 3), C6, C7, C8
+**Validation:**
+| Step | Command / action | Expected |
+|---|---|---|
+| unit | `go test ./... -race -cover` | pass, including `test/journeys/gate` |
+| lint | `GOTOOLCHAIN=go1.26.11 make lint` | 0 issues |
+| PR checks | push and open PR #9 | `tier3` reports skipped; Slice 7's checks pass |
+| proof run (C6) | `gh workflow run journeys.yml --ref ci/tier3-proof-787` on the scratch branch of Task 28 | `TestChartConvergesOnNebari` and `TestManagementOnNebari` pass; summary shows `nebari-ca-issuer`, Application `Synced`/`Healthy`, timing and resource reports |
+| release run (C6, C7) | `gh workflow run journeys.yml --ref feat/us-08-tier3` | summary reads `NON-BLOCKING`, NIC tag `v0.18.0` (or later) and its commit; job exits 0 |
+| fork PR (C1) | with the user's approval, a PR from a fork against `feat/us-08-tier3` | every required check reports without secrets; `tier3` skipped |
+| ruleset (C8) | `gh api repos/nebari-dev/nebari-user-secrets/rulesets` before and after the slice | identical |
+| report (C8) | read `docs/ci/turn-on-report.md` | every section the CI spec lists, with measured numbers labelled by run |
+
+### Task 26: NIC release gate
+
+**Files:**
+- Create: `test/journeys/gate/gate.go`, `test/journeys/gate/gate_test.go`, `test/journeys/cmd/nicgate/main.go`
+
+**Interfaces:**
+- Produces: `type ReleaseAPI interface { LatestRelease(ctx context.Context) (tag, commit string, err error); Contains(ctx context.Context, tag, commit string) (bool, error) }`; `func NewGitHubAPI(c *http.Client, baseURL, repo, token string) *GitHubAPI`; `type Decision struct{ Tag, Commit string; Blocking bool }`; `func Decide(ctx context.Context, api ReleaseAPI, required string, attempts int, backoff time.Duration) (Decision, error)`. `cmd/nicgate` reads `NIC_REQUIRED_COMMIT`, `GITHUB_TOKEN` and writes `blocking`, `nic-tag`, `nic-commit` to `$GITHUB_OUTPUT`; exit 1 when `Decide` errors.
+
+- [ ] **Step 1: Write `TestDecide`** (table, fake API): compare `behind` gives non-blocking with the tag; `ahead` and `identical` give blocking; `diverged` gives non-blocking; two transient errors then success decides with 3 attempts; three errors return an error (no guess either way). **`TestGitHubAPI`** with `httptest`: `GET /repos/<repo>/releases/latest` then `GET /repos/<repo>/commits/<tag>` for the commit; `GET /repos/<repo>/compare/<required>...<tag>` maps `status`; the `Authorization: Bearer <token>` header is sent (unauthenticated calls hit the 60/hour limit); a 403 or 5xx is an error.
+- [ ] **Step 2: Run:** FAIL. **Step 3: Implement** with `net/http` and `encoding/json`; `Contains` is true for `ahead` or `identical`. **Step 4: Run** `go test ./test/journeys/gate -race -v`: PASS.
+
+### Task 27: Tier 3 workflow and the first Nebari journeys
+
+**Files:**
+- Create: `.github/workflows/journeys.yml`, `test/journeys/gitops/user-secrets.yaml`, `test/journeys/gitops/user-secrets-cluster.yaml`, `test/journeys/gitops/values-nebari.yaml`, `test/journeys/seed-keycloak.sh`, `test/journeys/nebari_test.go`, `test/journeys/helpers_test.go`
+- Modify: `test/journeys/catalog.yaml` (test names exist now; status stays `planned` until Task 28), `docs/ci/coverage.md`, `Makefile` (`journeys-test`), `docs/architecture/contracts.md`
+
+**Interfaces:**
+- Consumes: `cmd/nicgate` (Task 26), `cmd/summary` (Task 25), pins `SANDBOX_ACTION_REF`.
+- Produces: tests `TestChartConvergesOnNebari` (P3.1) and `TestManagementOnNebari` (J1.3) under `//go:build journeys`, reading `KUBECONFIG`, `NEBARI_DOMAIN`, `KEYCLOAK_ISSUER` and `JOURNEY_USER`/`JOURNEY_PASSWORD` from env.
+
+- [ ] **Step 1: Tests.** `TestChartConvergesOnNebari`: Applications `user-secrets` and `user-secrets-cluster` are `Synced` and `Healthy`; the Deployment is Available; the serving `Certificate` is Ready with `issuerRef` `ClusterIssuer/nebari-ca-issuer`; its `ca.crt` chains to the trust bundle ConfigMap's root; `user-secrets-guard-state` reads `verified` within 2 minutes. `TestManagementOnNebari`: the seeded user's password-grant token for client `user-secrets-journeys` stores and lists `vendor_key` with its binding, through a pod in the landing namespace carrying the frontend labels (the same reach method as `test/e2e`).
+- [ ] **Step 2: GitOps.** `user-secrets.yaml` is an Argo CD Application in the form the sandbox's README documents for `add-software-pack` (`repoURL` from `${GITOPS_DIR}`), Helm values from `values-nebari.yaml` plus `image.tag` set to `ci-${GITHUB_SHA}` with `pullPolicy: IfNotPresent`, issuer from the sandbox's `keycloak-issuer-url`, `clientID: user-secrets-journeys`, registry app `test-consumer`. `user-secrets-cluster.yaml` deploys `cluster/` with kustomize, sync-wave after the chart.
+- [ ] **Step 3: `seed-keycloak.sh`.** Uses the `keycloak-realm-admin-password` output to create client `user-secrets-journeys` (public, direct grants) and one user with a random password generated in the job and masked with `::add-mask::`. It writes `JOURNEY_USER` and `JOURNEY_PASSWORD` to `$GITHUB_ENV`.
+- [ ] **Step 4: `journeys.yml`.** Same four triggers as `ci.yml`, plus job `tier3` with `if: github.event_name != 'pull_request'` and `timeout-minutes: 90`. Steps:
+  1. Load pins.
+  2. `nicgate` (id `gate`).
+  3. Define `run` as `steps.gate.outputs.blocking == 'true' || github.event_name != 'merge_group'`.
+  4. Behind `if: run`: sandbox `nebari-dev/action-nebari-sandbox@<SANDBOX_ACTION_REF>` with `nic-version: ${{ steps.gate.outputs.nic-tag }}`, `in-cluster-dns: true`, `timing-report: true`, `resource-summary: true`; `docker build` with the pinned builder and `kind load docker-image` into `kind-<cluster-name>`; seed; `add-software-pack` twice; a convergence step (every Application `Synced`/`Healthy`, 10-minute bound); then `go test -tags journeys ./test/journeys/... -json | tee journeys.json`.
+  5. Each of those steps has `continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}`.
+  6. A summary step (`if: always()`) passes the NIC outputs, `--blocking`, the timing and resource reports, and, when skipped in `merge_group`, `--note` with the line `Tier 3 skipped in the merge queue: NIC <tag> does not contain #787 (non-blocking)`.
+  7. A last step fails the job when blocking and any earlier step failed.
+- [ ] **Step 5: Run** `go vet -tags journeys ./test/journeys/...` and `go test ./test/journeys/... -race`: PASS. `TestRepoCatalog` passes with the new test names and the sandbox ref cross-check. Update `contracts.md` with the two consumed sandbox and App-of-Apps entries as used.
+
+### Task 28: Proof run and turn-on report
+
+**Files:**
+- Create: `docs/ci/turn-on-report.md`
+- Modify: `test/journeys/catalog.yaml` (`J1.3`, `P3.1` to `covered`), `docs/ci/coverage.md`
+
+- [ ] **Step 1: Ruleset before.** Save `gh api repos/nebari-dev/nebari-user-secrets/rulesets` and each ruleset's detail to the report's appendix.
+- [ ] **Step 2: Proof run (controller only; user-approved).** Create scratch branch `ci/tier3-proof-787` from `feat/us-08-tier3`. On it, edit `journeys.yml` only: the gate step is replaced by fixed outputs `nic-tag: de81b1131fbe26fca289f841347d84af727f692f`, `blocking: true`. Push, `gh workflow run journeys.yml --ref ci/tier3-proof-787`, wait, save the summary, `timing-report` and `resource-summary`. Delete the branch afterwards. It is never merged or opened as a PR.
+- [ ] **Step 3: Release run.** `gh workflow run journeys.yml --ref feat/us-08-tier3`; save the summary (`NON-BLOCKING`, bring-up timing up to our install).
+- [ ] **Step 4: Flip** `J1.3` and `P3.1` to `covered` only if Step 2 passed both tests; regenerate `coverage.md`.
+- [ ] **Step 5: Write the report.** Sections exactly as the CI spec's "Report before turning anything on":
+  - **Merge queue:** the proposed ruleset JSON, with the five required checks plus `tier3`, squash, and build concurrency and batch size from the numbers.
+  - **Stacking:** the retarget behaviour, with a GitHub docs link, marked "to be observed at the first stack merge".
+  - **Tier 3 time and size:** from both runs, labelled by run.
+  - **Queue throughput:** the formula with the measured numbers.
+  - **Runner fit:** peak memory and disk against 16 GB and 14 GB, with the sandbox's own figures quoted.
+  - **Appendix:** the unchanged ruleset.
+- [ ] **Step 6: Ruleset after.** The same `gh api` output is identical to Step 1.
+
+**Checkpoint (controller, after the last task; implementers ignore):** run validation, paste evidence, open PR(s), STOP for go-ahead.
+
+---
+
+## Slice 9: Init container and env wrapper
+**Goal:** A pod with the init container gets its secrets as exact-byte files, optionally as environment variables, and a readable reason when delivery fails.
+**Repos / branches:** nebari-user-secrets: `feat/us-09-init` (base: `feat/us-08-tier3`)
+**PRs:** nebari-user-secrets#10 "user-secrets-init and user-secrets-env" (links spec + plan)
+**Depends on:** Slice 8
 **Contracts touched:** File layout under `/var/run/nebari/secrets`, `user-secrets-env -- <cmd>` wrapper behaviour
 **Docs updated:** docs/architecture/contracts.md
 **Advances journeys:** 13, 17
@@ -571,7 +1088,7 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 | unit | `go test ./... -race -cover` | pass, `internal/initfiles` coverage at least 90% |
 | e2e | `go test -tags e2e ./test/e2e/... -run TestInit -v` | pass |
 
-### Task 22: File writer
+### Task 29: File writer
 
 **Files:** Create `internal/initfiles/files.go`, `internal/initfiles/files_test.go`
 
@@ -581,7 +1098,7 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 - [ ] **Step 1: Failing tests:** `TestWriteAllExactBytes` (journey 13 bytes `{"k":"a$$b$(HOME){username}"}` + `\n` + `0xff` → identical file, mode `0440`); `TestWriteAllRejectsBadNames` (`LD_PRELOAD`, `NEBARI_SECRET_a`, `NEBARI_SECRET_../x` → not written, error); `TestWriteAllRemovesStale` (Review Focus 4: second run without `NEBARI_SECRET_OLD` removes it, leaves `.status`); `TestWriteIsAtomic` (temp file + rename in the same directory).
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement.** **Step 4: Run**: PASS.
 
-### Task 23: Fetch and the init binary
+### Task 30: Fetch and the init binary
 
 **Files:** Create `internal/initfiles/fetch.go`, `internal/initfiles/client.go`, `internal/initfiles/fetch_test.go`; Modify `cmd/user-secrets-init/main.go`
 
@@ -591,7 +1108,7 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 - [ ] **Step 1: Failing tests:** `TestFetch` table: 200 → files and `ok <n>`; 503 then 200 → retried with backoff within budget; connection refused until budget → `error unreachable`; 403 `pod_predates_guard` → `error pod_predates_guard` no retry; CA file missing → `error ca_missing`; strict vs soft exit codes in `TestInitMain` (via `exec` of the test binary).
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement** (exponential backoff from 500 ms, cap 5 s, total `budget` 30 s). **Step 4: Run**: PASS.
 
-### Task 24: Env wrapper
+### Task 31: Env wrapper
 
 **Files:** Create `internal/initfiles/env.go`, `internal/initfiles/env_test.go`; Modify `cmd/user-secrets-init/main.go` (dispatch when `argv[0]` base is `user-secrets-env`)
 
@@ -606,11 +1123,11 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 
 ---
 
-## Slice 8: Injector
+## Slice 10: Injector
 **Goal:** A pack that sets only the ServiceAccount, label and annotations gets secrets delivered, and its failure mode decides what happens while the injector is down.
-**Repos / branches:** nebari-user-secrets: `feat/us-08-injector` (base: `feat/us-07-init`)
-**PRs:** nebari-user-secrets#9 "Injector webhook" (links spec + plan)
-**Depends on:** Slice 7
+**Repos / branches:** nebari-user-secrets: `feat/us-10-injector` (base: `feat/us-09-init`)
+**PRs:** nebari-user-secrets#11 "Injector webhook" (links spec + plan)
+**Depends on:** Slice 9
 **Contracts touched:** Injector `MutatingWebhookConfiguration` `user-secrets-injector` and its patch, Optional pod metadata (label `nebari.dev/user-secrets-failure`; annotations `nebari.dev/user-secrets-export-env` and `-containers`), Consumer contract (`docs/architecture/contracts.md`), Cluster bundle (`cluster/` with `cluster/REVIEW.md`)
 **Docs updated:** docs/architecture/contracts.md, cluster/REVIEW.md
 **Advances journeys:** 14, 22, 7, 6
@@ -621,7 +1138,7 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 | policy | `make policy-test` | all pass with the webhook in the bundle; transcripts refreshed |
 | e2e | `go test -tags e2e ./test/e2e/... -run 'TestNewConsumerByValuesOnly|TestInjectorFailureModes|TestCrossUserIsolation' -v` | pass (journeys 14, 22, 7) |
 
-### Task 25: Mutate
+### Task 32: Mutate
 
 **Files:** Create `internal/inject/inject.go`, `internal/inject/inject_test.go`
 
@@ -631,7 +1148,7 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 - [ ] **Step 1: Failing tests** (`TestMutate` table on real `corev1.Pod` values): unlabelled pod → returned unchanged; KubeSpawner-shaped pod → init container, four volumes, token and trust mounts only in the init container, read-only files and bin mounts in container 0 only; existing `fsGroup: 100` kept, absent → 65532; `user-secrets-containers: "a,c"` mounts into `a` and `c` only, unknown names ignored; export-env with `args` → `args` = wrapper path, `--`, old args (journey 6 half); with `command` set → prepended to `command`; pre-existing `user-secrets-files` volume of another type → replaced; second `Mutate` on the output → deep-equal (idempotent); SA, labels and annotations never change; `TestMutatedPodRestricted` (a restricted-compliant input stays restricted after `Mutate`, pod-security-admission v0.35.0).
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement.** **Step 4: Run**: PASS.
 
-### Task 26: Webhook server and configuration
+### Task 33: Webhook server and configuration
 
 **Files:** Create `internal/httpapi/webhook.go`, `internal/httpapi/webhook_test.go`, `cluster/webhook.yaml`; Modify `cluster/kustomization.yaml` (resource + replacement for `metadata.annotations.[cert-manager.io/inject-ca-from]` and `webhooks.*.clientConfig.service.namespace`), `cluster/embed.go`, `cmd/user-secrets/serve.go` (`:9443`), `chart/templates/networkpolicy.yaml` (9443 from any source), `cluster/REVIEW.md`
 
@@ -641,7 +1158,7 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 - [ ] **Step 1: Failing tests:** `TestWebhookAlwaysAllows` (malformed object → allowed, no patch); `TestWebhookPatch` (labelled pod → patch whose application equals `Mutate`'s output); `TestWebhookYAML` (parsed `cluster/webhook.yaml`: two entries, selectors, failure policies, `sideEffects: None`, `reinvocationPolicy: IfNeeded`, `timeoutSeconds: 5`, rules `pods` `CREATE` only).
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement.** **Step 4: Run** unit and `make policy-test`: PASS; commit refreshed transcripts.
 
-### Task 27: Consumer journeys on kind
+### Task 34: Consumer journeys on kind
 
 **Files:** Create `test/e2e/consumer_test.go`; Modify `test/e2e/fixtures/consumer.yaml` (pods carry only SA, label and annotations now)
 
@@ -652,11 +1169,11 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 
 ---
 
-## Slice 9: Release and operations
+## Slice 11: Release and operations
 **Goal:** Operators can install a released version, back up and rotate the master key, and roll the guard out from `[Warn, Audit]` to `[Deny]` by following written steps.
-**Repos / branches:** nebari-user-secrets: `feat/us-09-release` (base: `feat/us-08-injector`)
-**PRs:** nebari-user-secrets#10 "Release workflow and operations guide" (links spec + plan)
-**Depends on:** Slice 8
+**Repos / branches:** nebari-user-secrets: `feat/us-11-release` (base: `feat/us-10-injector`)
+**PRs:** nebari-user-secrets#12 "Release workflow and operations guide" (links spec + plan)
+**Depends on:** Slice 10
 **Contracts touched:** Master-key Secret `user-secrets-kek` and the `user-secrets admin` commands
 **Docs updated:** docs/architecture/contracts.md, docs/operations.md, README.md
 **Advances journeys:** 21
@@ -666,14 +1183,14 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 | release dry run | `goreleaser release --snapshot --clean` | images for both arches and a packaged chart under `dist/` |
 | docs | follow `docs/operations.md` "Rotate the master key" on the e2e cluster | `rotate-kek` Job completes; journey 21 e2e `TestKEKRotationDuringStarts` passes |
 
-### Task 28: Release workflow
+### Task 35: Release workflow
 
 **Files:** Create `.goreleaser.yml`, `.github/workflows/release.yml`, `.github/workflows/vulncheck.yml`
 
 - [ ] **Step 1:** Mirror nebari-operator's release shape: on tag `v*`, build both binaries for `linux/amd64,arm64`, push `ghcr.io/nebari-dev/nebari-user-secrets:<tag>`, package and push the chart as an OCI artifact, attach `cluster/` as a tarball. `vulncheck.yml` runs `govulncheck ./...` on PRs.
 - [ ] **Step 2: Run** `goreleaser release --snapshot --clean`: Expected: `dist/` holds both images' binaries and the chart.
 
-### Task 29: Operations guide and rotation journey
+### Task 36: Operations guide and rotation journey
 
 **Files:** Create `docs/operations.md`, `test/e2e/fixtures/rotate-kek-job.yaml`, `test/e2e/rotation_test.go`; Modify `README.md`
 
@@ -696,3 +1213,5 @@ Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved
 | `c.KubeSpawner.modify_pod_hook` | data-science-pack | data-science-pack consumer plan |
 | `server` role scopes | data-science-pack | data-science-pack consumer plan |
 | dask-gateway-pack DaskCluster policy | dask-gateway-pack | dask-gateway-pack consumer plan |
+
+Slices 7 and 8 (added 2026-11-24): `python3 -I ~/.claude/skills/program-design-slices/lint-slices.py docs/superpowers/plans/2026-11-20-user-secrets-service.md --spec docs/superpowers/specs/2026-11-24-ci-tiers-design.md` exits 1 with exactly one problem, accepted by decision: `Static JWKS server in e2e-keycloak` is `changed-breaking` but is not split into expand, migrate and contract slices. The producer (`setup.sh`, `fixtures/jwks.yaml`) and every consumer (`fixtures/values.yaml`, `helpers_test.go`, `e2e_test.go`) are test files in this repo that change together in Task 24's single PR, so no intermediate state exists in which a consumer breaks; the slice lists all three phases on Slice 7.

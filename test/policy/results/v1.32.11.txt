@@ -14,13 +14,13 @@ Creating cluster "us-vap-spike" ...
  ✓ Installing StorageClass 💾
  • Waiting ≤ 3m0s for control-plane = Ready ⏳  ...
  ✓ Waiting ≤ 3m0s for control-plane = Ready ⏳
- • Ready after 16s 💚
+ • Ready after 15s 💚
 Set kubectl context to "kind-us-vap-spike"
 You can now use your cluster with:
 
 kubectl cluster-info --context kind-us-vap-spike
 
-Have a nice day! 👋
+Not sure what to do next? 😅  Check out https://kind.sigs.k8s.io/docs/user/quick-start/
 Server Version: v1.32.11
 == setup
 == waiting for policies to take effect
@@ -53,7 +53,7 @@ PASS  admin mints a token for another audience
 PASS  pod with user-secrets projected token becomes Ready
 == TokenReview extras for a pod-bound token (open question 5)
       authenticated: True | user: system:serviceaccount:hub-ns:notebook-wl
-      extra: {"authentication.kubernetes.io/credential-id": ["JTI=4be5e665-14f7-4c31-8d02-350801b61ea7"], "authentication.kubernetes.io/node-name": ["us-vap-spike-control-plane"], "authentication.kubernetes.io/node-uid": ["c4d001e9-96e5-49ad-a7ed-65f488057fa0"], "authentication.kubernetes.io/pod-name": ["nb-a"], "authentication.kubernetes.io/pod-uid": ["06015c74-2da3-40b3-9c4e-c58399188df0"]}
+      extra: {"authentication.kubernetes.io/credential-id": ["JTI=abca6e90-005d-4333-831f-b15900c414cf"], "authentication.kubernetes.io/node-name": ["us-vap-spike-control-plane"], "authentication.kubernetes.io/node-uid": ["770a35b5-2ed9-4644-81b8-cc69c5b9e00f"], "authentication.kubernetes.io/pod-name": ["nb-a"], "authentication.kubernetes.io/pod-uid": ["175fc14b-0e44-4516-9cc3-d156ad41dae5"]}
 PASS  TokenReview extra carries pod-name and pod-uid
 == service account: dry-run only, and the probe
 PASS  service SA creates a real pod
@@ -78,10 +78,10 @@ PASS  guard rules still active: user-secrets token by mallory
 PASS  hub creates labelled pod again after restore
 == Warn-only binding stops enforcement (guard must treat as bad), and the change is detectable
 PASS  with [Warn], mallory's labelled pod is admitted (real create)
-      binding before: rv/gen/uid 452 1 cbeba42d-5691-42fc-bf6a-dc37784ebbaf; after Warn and back to Deny: 553 3 cbeba42d-5691-42fc-bf6a-dc37784ebbaf
-      pod admitted under Warn created 2026-11-23T21:09:44Z; newest managedFields time on the binding 2026-11-23T21:09:38Z (not used: it does not advance on a value change)
+      binding before: rv/gen/uid 453 1 10604cb7-116b-47e8-88e4-78f485c018cd; after Warn and back to Deny: 563 3 10604cb7-116b-47e8-88e4-78f485c018cd
+      pod admitted under Warn created 2026-11-25T13:46:42Z; newest managedFields time on the binding 2026-11-25T13:46:34Z (not used: it does not advance on a value change)
 PASS  Warn-and-restore is detectable: resourceVersion changed and generation advanced by 2, uid unchanged
-      after delete and re-create: 559 1 466b9da7-5737-4ff5-837b-53aee804d579
+      after delete and re-create: 569 1 5d103a2a-6722-40ff-b296-e64c9e49ebef
 PASS  delete-and-recreate is detectable: uid changed
 
 RESULT: 42 passed, 0 failed

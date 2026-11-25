@@ -18,13 +18,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+
+	"github.com/nebari-dev/nebari-user-secrets/internal/guard"
 )
 
 // Names and timing for the guard tests.
 const (
 	creatorsName   = "user-secrets-creators"
 	guardStateName = "user-secrets-guard-state"
-	pauseImage     = "registry.k8s.io/pause:3.10"
 
 	// stateVerified and stateConfirmedBad are the guard states the status
 	// route reports.
@@ -77,7 +78,7 @@ func guardReplicas(t *testing.T) []replica {
 		if p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning {
 			continue
 		}
-		out = append(out, replica{pod: p.Name, api: portForwardMgmt(t, serviceNS, "pod/"+p.Name)})
+		out = append(out, replica{pod: p.Name, api: portForwardMgmt(t, serviceNS, "pod/"+p.Name, true)})
 	}
 	if want := int(*dep.Spec.Replicas); len(out) != want {
 		t.Fatalf("%d running service pods, want %d", len(out), want)
@@ -237,7 +238,7 @@ func restoreBundle(t *testing.T) time.Time {
 // (watch path); re-applying the bundle makes it verified again.
 func TestGuardFailClosed(t *testing.T) {
 	reps := guardReplicas(t)
-	tok := signToken(t, uniqueSub("guard"), clientID)
+	tok := userToken(t, "alice", clientID)
 
 	_, gs := waitGuard(t, reps, tok, stateVerified, baselineTimeout)
 	for i, r := range reps {
@@ -261,7 +262,7 @@ func TestGuardFailClosed(t *testing.T) {
 // the 30 s margin.
 func TestGuardVerifiedSinceMoves(t *testing.T) {
 	reps := guardReplicas(t)
-	tok := signToken(t, uniqueSub("guard"), clientID)
+	tok := userToken(t, "alice", clientID)
 
 	waitGuard(t, reps, tok, stateVerified, baselineTimeout)
 	before := guardStateVerifiedSince(t)
@@ -330,7 +331,7 @@ func plainPod(labelled bool) *corev1.Pod {
 			AutomountServiceAccountToken: ptr.To(false),
 			Containers: []corev1.Container{{
 				Name:  "pause",
-				Image: pauseImage,
+				Image: guard.PauseImage,
 				Resources: corev1.ResourceRequirements{
 					Limits: corev1.ResourceList{
 						corev1.ResourceCPU:    resource.MustParse("10m"),
@@ -354,7 +355,7 @@ func TestMissingConfigMapLeavesClusterWorking(t *testing.T) {
 	ctx := context.Background()
 	cs := kube(t)
 	reps := guardReplicas(t)
-	tok := signToken(t, uniqueSub("guard"), clientID)
+	tok := userToken(t, "alice", clientID)
 
 	waitGuard(t, reps, tok, stateVerified, baselineTimeout)
 	t.Cleanup(func() {
