@@ -1,7 +1,10 @@
 # Build the user-secrets and user-secrets-init binaries.
 # The builder always runs on the build host and cross-compiles for the target
 # platform, so multi-arch builds need no QEMU emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+# GO_BUILDER_IMAGE comes from ci/pins.env (the Makefile passes it); this default
+# is checked against the pin by test/journeys/catalog.
+ARG GO_BUILDER_IMAGE=golang:1.26@sha256:6e59e17a20f13c102e49d82dffab66d41cffe6c266b225d82794328aea859ab5
+FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

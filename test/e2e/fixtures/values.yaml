@@ -1,5 +1,6 @@
 # Chart values for the e2e release in namespace us-system. image is set by
-# setup.sh from $IMG.
+# setup.sh from $IMG. keycloak points at the realm Keycloak serves in
+# e2e-keycloak (fixtures/keycloak).
 registry:
   apps:
     - id: jupyter
@@ -8,10 +9,10 @@ registry:
           serviceAccount: default
   creators: []
 keycloak:
-  jwksURL: https://jwks.e2e-keycloak.svc/jwks.json
+  jwksURL: https://keycloak.e2e-keycloak.svc:8443/realms/nebari/protocol/openid-connect/certs
   issuers:
-    - https://keycloak.nebari.local/realms/nebari
-  clientID: nebari-landing
+    - https://keycloak.e2e-keycloak.svc:8443/realms/nebari
+  clientID: user-secrets-e2e
 landing:
   namespace: nebari-system
   podSelector:

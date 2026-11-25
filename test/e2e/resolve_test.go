@@ -36,11 +36,6 @@ const (
 	workloadSA  = "tc-workload"
 	creatorUser = "system:serviceaccount:test-consumer:tc-creator"
 
-	// curlImage is curlimages/curl 8.22.0 pinned by the digest of its
-	// multi-arch manifest list (skopeo inspect --raw
-	// docker://docker.io/curlimages/curl:8.22.0 | sha256sum, 2026-11-24).
-	curlImage = "docker.io/curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
-
 	tokenDir  = "/var/run/secrets/user-secrets"
 	bundleDir = "/etc/nebari/trust"
 	// podTimeout bounds a consumer pod's start (image pull on a fresh
@@ -93,7 +88,7 @@ func consumerPod(sub, app string, labelled bool, mode podMode) *corev1.Pod {
 			},
 			Containers: []corev1.Container{{
 				Name:    "curl",
-				Image:   curlImage,
+				Image:   pin("CURL_IMAGE"),
 				Command: cmd,
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: ptr.To(false),
@@ -297,7 +292,7 @@ func execResolve(t *testing.T, pod, token string) resolveResult {
 func readyForPods(t *testing.T) ([]replica, string) {
 	t.Helper()
 	reps := guardReplicas(t)
-	tok := signToken(t, uniqueSub("resolve"), clientID)
+	tok := userToken(t, "alice", clientID)
 	waitGuard(t, reps, tok, stateVerified, baselineTimeout)
 	waitPastVerifiedSince(t)
 	return reps, tok
@@ -419,8 +414,7 @@ func checkError(t *testing.T, r resolveResult, status int, code string) {
 func TestResolveFromLabelledPod(t *testing.T) {
 	readyForPods(t)
 	api := mgmtClient(t)
-	sub := uniqueSub("resolve-a")
-	tok := signToken(t, sub, clientID)
+	tok, sub := freshUser(t, "alice")
 	alpha := newSecret("alpha_key", bind(consumerApp, "ALPHA"))
 	both := newSecret("both_key", bind(consumerApp, "BETA"), bind(otherApp, "BETA_NB"))
 	nbOnly := newSecret("nb_key", bind(otherApp, "NB_ONLY"))
@@ -463,13 +457,13 @@ func TestResolveFromLabelledPod(t *testing.T) {
 func TestCrossUserIsolation(t *testing.T) {
 	readyForPods(t)
 	api := mgmtClient(t)
-	subA, subB := uniqueSub("iso-a"), uniqueSub("iso-b")
-	tokA := signToken(t, subA, clientID)
+	tokA, _ := freshUser(t, "alice")
+	tokB, subB := freshUser(t, "bob")
 	aShared := newSecret("shared_key", bind(consumerApp, "SHARED"))
 	aOnly := newSecret("a_only", bind(consumerApp, "A_ONLY"))
 	bShared := newSecret("shared_key", bind(consumerApp, "SHARED"))
 	putSecrets(t, api, tokA, aShared, aOnly)
-	putSecrets(t, api, signToken(t, subB, clientID), bShared)
+	putSecrets(t, api, tokB, bShared)
 
 	t.Run("B's pod gets only B's secrets", func(t *testing.T) {
 		_, r := resolveOnce(t, creatorKube(t), consumerPod(subB, consumerApp, true, modeOnce))
@@ -561,11 +555,12 @@ func replaceRecord(t *testing.T, sub string, rec []byte) {
 func TestDecryptFailedOnKind(t *testing.T) {
 	readyForPods(t)
 	api := mgmtClient(t)
-	subA, subB := uniqueSub("dec-a"), uniqueSub("dec-b")
+	tokA, subA := freshUser(t, "alice")
+	tokB, subB := freshUser(t, "bob")
 	aKey := newSecret("vendor_key", bind(consumerApp, "VENDOR_KEY"))
 	bKey := newSecret("vendor_key", bind(consumerApp, "VENDOR_KEY"))
-	putSecrets(t, api, signToken(t, subA, clientID), aKey)
-	putSecrets(t, api, signToken(t, subB, clientID), bKey)
+	putSecrets(t, api, tokA, aKey)
+	putSecrets(t, api, tokB, bKey)
 
 	recA := getRecordSecret(t, subA).record(t)
 	secB := getRecordSecret(t, subB)
@@ -602,9 +597,9 @@ func TestDecryptFailedOnKind(t *testing.T) {
 func TestResolveGuard(t *testing.T) {
 	reps, tok := readyForPods(t)
 	api := mgmtClient(t)
-	sub := uniqueSub("guard-a")
+	userTok, sub := freshUser(t, "alice")
 	key := newSecret("guard_key", bind(consumerApp, "GUARD_KEY"))
-	putSecrets(t, api, signToken(t, sub, clientID), key)
+	putSecrets(t, api, userTok, key)
 	creator := creatorKube(t)
 
 	patchCreatorsBindingWarn(t, reps, tok)
@@ -626,9 +621,9 @@ func TestResolveGuard(t *testing.T) {
 // helm upgrade of the service, a new consumer pod still resolves the value.
 func TestDurabilityThroughResolve(t *testing.T) {
 	api := mgmtClient(t)
-	sub := uniqueSub("durable-r")
+	tok, sub := freshUser(t, "alice")
 	key := newSecret("durable_key", bind(consumerApp, "DURABLE_KEY"))
-	putSecrets(t, api, signToken(t, sub, clientID), key)
+	putSecrets(t, api, tok, key)
 
 	mustRun(t, time.Minute, "kubectl", "-n", serviceNS, "rollout", "restart", "deployment/"+releaseName)
 	mustRun(t, 5*time.Minute, "kubectl", "-n", serviceNS, "rollout", "status", "deployment/"+releaseName, "--timeout=280s")
@@ -684,8 +679,9 @@ func TestResolveDeniedAudit(t *testing.T) {
 	readyForPods(t)
 	start := time.Now().Add(-2 * time.Second)
 	api := mgmtClient(t)
-	sub := uniqueSub("audit-a")
-	mgmtTok := signToken(t, sub, clientID)
+	// bob, not alice: the test before this one resolves alice's secrets, and
+	// its secret_read lines may fall inside the 2 s margin before start.
+	mgmtTok, sub := freshUser(t, "bob")
 	one := newSecret("audit_one", bind(consumerApp, "AUDIT_ONE"))
 	two := newSecret("audit_two", bind(consumerApp, "AUDIT_TWO"))
 	putSecrets(t, api, mgmtTok, one, two)

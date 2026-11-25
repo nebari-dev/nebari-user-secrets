@@ -5,7 +5,8 @@ cd "$(dirname "$0")"
 export KUBECONFIG=$PWD/kubeconfig
 SVC=${SVC_NS:-secrets-svc}
 K="kubectl"
-PAUSE=registry.k8s.io/pause:3.10
+source ../../ci/load-pins.sh || exit 1
+PAUSE=$PAUSE_IMAGE
 PASS=0; FAIL=0
 
 expect() { # expect allow|deny <name> <msg-substring-or-empty> -- cmd...
@@ -235,3 +236,4 @@ expect allow "delete-and-recreate is detectable: uid changed" "" -- \
 rm -rf "$BUNDLE"
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
+exit $(( FAIL > 0 ))

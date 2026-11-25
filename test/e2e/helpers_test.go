@@ -8,9 +8,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -25,11 +25,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/nebari-dev/nebari-user-secrets/internal/model"
+	"github.com/nebari-dev/nebari-user-secrets/test/journeys/catalog"
 )
 
 // Values shared with test/e2e/setup.sh and test/e2e/fixtures.
@@ -38,13 +40,20 @@ const (
 	landingNS   = "nebari-system"
 	workloadNS  = "e2e-workload"
 	releaseName = "user-secrets"
-	issuer      = "https://keycloak.nebari.local/realms/nebari"
-	clientID    = "nebari-landing"
-	signingKID  = "e2e-1"
 	serviceHost = "user-secrets." + serviceNS + ".svc"
 	chartDir    = "../../chart"
 	bundleName  = "nebari-trust-bundle"
 	bundleKey   = "ca-certificates.crt"
+
+	// Keycloak (test/e2e/fixtures/keycloak): the realm's in-cluster issuer,
+	// the client the service accepts (keycloak.clientID), and the pod the
+	// tests request tokens from.
+	keycloakNS   = "e2e-keycloak"
+	keycloakHost = "keycloak." + keycloakNS + ".svc:8443"
+	issuer       = "https://" + keycloakHost + "/realms/nebari"
+	clientID     = "user-secrets-e2e"
+	tokenClient  = "kc-client"
+	realmFile    = "test/e2e/fixtures/keycloak/realm.json"
 )
 
 // repoPath resolves a path relative to the repository root (tests run in
@@ -55,6 +64,29 @@ func repoPath(rel string) string {
 		panic(err)
 	}
 	return p
+}
+
+var pins = sync.OnceValues(func() (catalog.Pins, error) {
+	f, err := os.Open(repoPath("ci/pins.env"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return catalog.LoadPins(f)
+})
+
+// pin returns key's value from ci/pins.env, the only place external versions
+// are written. It panics if the file or the key is missing: no test can run
+// without it.
+func pin(key string) string {
+	p, err := pins()
+	if err != nil {
+		panic(fmt.Sprintf("ci/pins.env: %v", err))
+	}
+	if p[key] == "" {
+		panic("ci/pins.env has no " + key)
+	}
+	return p[key]
 }
 
 func kubeconfig() string {
@@ -107,65 +139,108 @@ func mustRun(t *testing.T, timeout time.Duration, name string, args ...string) {
 	}
 }
 
-var signingKey = sync.OnceValues(func() (*rsa.PrivateKey, error) {
-	raw, err := os.ReadFile(repoPath("test/e2e/.tmp/signing-key.pem"))
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, fmt.Errorf("signing key: no PEM block")
-	}
-	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	rk, ok := k.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("signing key is %T, want RSA", k)
-	}
-	return rk, nil
-})
-
-// signToken returns an RS256 access token shaped like Keycloak's for sub,
-// issued to client azp, signed with the key the JWKS server publishes.
-func signToken(t *testing.T, sub, azp string) string {
+// realmPassword returns user's password from the realm fixture (a fixture
+// value, not a secret).
+func realmPassword(t *testing.T, user string) string {
 	t.Helper()
-	key, err := signingKey()
+	raw, err := os.ReadFile(repoPath(realmFile))
 	if err != nil {
-		t.Fatalf("signing key (run make e2e-up first): %v", err)
+		t.Fatalf("read %s: %v", realmFile, err)
 	}
-	opts := (&jose.SignerOptions{}).WithType("JWT").WithHeader(jose.HeaderKey("kid"), signingKID)
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, opts)
+	var realm struct {
+		Users []struct {
+			Username    string `json:"username"`
+			Credentials []struct {
+				Type  string `json:"type"`
+				Value string `json:"value"`
+			} `json:"credentials"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(raw, &realm); err != nil {
+		t.Fatalf("decode %s: %v", realmFile, err)
+	}
+	for _, u := range realm.Users {
+		if u.Username != user {
+			continue
+		}
+		for _, c := range u.Credentials {
+			if c.Type == "password" {
+				return c.Value
+			}
+		}
+	}
+	t.Fatalf("%s has no password for user %s", realmFile, user)
+	return ""
+}
+
+// userToken returns an access token Keycloak issues to user for client by the
+// password grant, requested from inside the cluster (kubectl exec in
+// kc-client, trusting only the projected trust bundle).
+func userToken(t *testing.T, user, client string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := run(ctx, "kubectl", "-n", keycloakNS, "exec", tokenClient, "--",
+		"curl", "-sS", "--max-time", "20", "--cacert", "/etc/nebari/trust/"+bundleKey,
+		"--data-urlencode", "grant_type=password",
+		"--data-urlencode", "client_id="+client,
+		"--data-urlencode", "username="+user,
+		"--data-urlencode", "password="+realmPassword(t, user),
+		issuer+"/protocol/openid-connect/token")
 	if err != nil {
-		t.Fatalf("signer: %v", err)
+		t.Fatalf("token request for %s/%s (run make e2e-up first): %v\n%s", user, client, err, out)
 	}
-	now := time.Now()
-	claims := struct {
-		jwt.Claims
-		Typ               string   `json:"typ"`
-		Azp               string   `json:"azp"`
-		PreferredUsername string   `json:"preferred_username"`
-		Groups            []string `json:"groups"`
-	}{
-		Claims: jwt.Claims{
-			Issuer:    issuer,
-			Subject:   sub,
-			Audience:  jwt.Audience{"account"},
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)),
-			Expiry:    jwt.NewNumericDate(now.Add(5 * time.Minute)),
-		},
-		Typ:               "Bearer",
-		Azp:               azp,
-		PreferredUsername: sub,
-		Groups:            []string{"users"},
+	var resp struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
 	}
-	tok, err := jwt.Signed(signer).Claims(claims).Serialize()
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("token response for %s/%s: %v", user, client, err)
+	}
+	if resp.AccessToken == "" {
+		t.Fatalf("no token for %s/%s: %s %s", user, client, resp.Error, resp.Description)
+	}
+	return resp.AccessToken
+}
+
+// tokenSub returns the sub claim of tok (unverified: the test only reads its
+// own token).
+func tokenSub(t *testing.T, tok string) string {
+	t.Helper()
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		t.Fatalf("sign: %v", err)
+		t.Fatalf("decode token payload: %v", err)
 	}
-	return tok
+	var c struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil || c.Sub == "" {
+		t.Fatalf("token payload has no sub: %v", err)
+	}
+	return c.Sub
+}
+
+// freshUser returns a management token and the subject for user, after
+// deleting user's owner record and status Secrets (what the store's Delete
+// removes), so the test starts from an empty record as a new user would. The
+// realm's users are fixed, so this replaces a fresh subject per test.
+func freshUser(t *testing.T, user string) (tok, sub string) {
+	t.Helper()
+	tok = userToken(t, user, clientID)
+	sub = tokenSub(t, tok)
+	secrets := kube(t).CoreV1().Secrets(serviceNS)
+	for _, name := range []string{model.SecretName(sub), model.StatusSecretName(sub)} {
+		err := secrets.Delete(context.Background(), name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Fatalf("delete %s/%s: %v", serviceNS, name, err)
+		}
+	}
+	return tok, sub
 }
 
 // trustBundle returns a pool holding only ca-certificates.crt from
@@ -197,13 +272,20 @@ var forwardRE = regexp.MustCompile(`Forwarding from 127\.0\.0\.1:(\d+)`)
 // user-secrets.<ns>.svc, since the dial target is localhost.
 func mgmtClient(t *testing.T) *mgmtAPI {
 	t.Helper()
-	return portForwardMgmt(t, landingNS, "pod/landing-proxy")
+	return portForwardMgmt(t, landingNS, "pod/landing-proxy", false)
 }
 
 // portForwardMgmt port-forwards local to port 8444 of target in namespace ns
 // and returns a management API client for it, trusting only the cluster's
 // trust bundle and checking the certificate for user-secrets.<ns>.svc.
-func portForwardMgmt(t *testing.T, ns, target string) *mgmtAPI {
+//
+// keepAlive selects connection reuse. Pass true for a forward pinned to one
+// pod and polled repeatedly: with a new TLS connection per poll, each client
+// close_notify lands after the server closed, the pod sends a RST, and rarely
+// that kills kubectl port-forward ("lost connection to pod"): containerd
+// reports the reset as a forward error and client-go closes the whole forward.
+// Pass false for the landing-proxy path so each request re-picks a backend.
+func portForwardMgmt(t *testing.T, ns, target string, keepAlive bool) *mgmtAPI {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "kubectl", "-n", ns, "port-forward", target, ":8444")
@@ -253,7 +335,7 @@ func portForwardMgmt(t *testing.T, ns, target string) *mgmtAPI {
 			RootCAs:    trustBundle(t),
 			ServerName: serviceHost,
 		},
-		DisableKeepAlives: true,
+		DisableKeepAlives: !keepAlive,
 	}
 	return &mgmtAPI{base: "https://127.0.0.1:" + port, client: &http.Client{Transport: tr, Timeout: 10 * time.Second}}
 }
@@ -294,12 +376,6 @@ func (m *mgmtAPI) mustDo(t *testing.T, method, path, token string, body any) (in
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	return status, b
-}
-
-// uniqueSub returns a subject that no earlier run used, so reruns against the
-// same cluster start from an empty record.
-func uniqueSub(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
 // parseCerts decodes every CERTIFICATE block in pemData.

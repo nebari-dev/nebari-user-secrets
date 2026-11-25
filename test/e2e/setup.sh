@@ -2,33 +2,36 @@
 # End-to-end cluster for the installable service: kind us-e2e with Calico (so
 # NetworkPolicy is enforced), cert-manager and trust-manager with NIC's values,
 # NIC's cluster CA and trust bundle (rendered from the vendored templates for
-# certificate.type: letsencrypt), a static HTTPS JWKS server and the chart.
+# certificate.type: letsencrypt), Keycloak with the test realm and the chart.
 #
 # Usage: setup.sh up|down. Uses $IMG (already in the local docker store; see
-# make image-load). Kubeconfig: .kube/e2e. Test key: test/e2e/.tmp/.
+# make image-load). Kubeconfig: .kube/e2e. Rendered manifests: test/e2e/.tmp/.
 set -euo pipefail
 
 CLUSTER=us-e2e
-NODE_IMAGE=kindest/node:v1.34.3
-# Calico v3.32.3, manifest from the release tag:
-CALICO_VERSION=v3.32.3
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Versions (KIND_NODE_IMAGE, CALICO_VERSION, GATEWAY_API_VERSION,
+# CERT_MANAGER_VERSION, TRUST_MANAGER_VERSION, KEYCLOAK_IMAGE, CURL_IMAGE) come
+# from ci/pins.env.
+source "$ROOT/ci/load-pins.sh"
+NODE_IMAGE=$KIND_NODE_IMAGE
+# Calico manifest from the release tag:
 CALICO_MANIFEST="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
 # NIC's cert-manager values set config.enableGatewayAPI, and cert-manager
 # refuses to start without the Gateway API CRDs. NIC gets them from Envoy
 # Gateway v1.9.1 (pkg/argocd/templates/apps/envoy-gateway.yaml), which builds
-# against sigs.k8s.io/gateway-api v1.6.1; install that release's standard CRDs.
-GATEWAY_API_VERSION=v1.6.1
+# against sigs.k8s.io/gateway-api GATEWAY_API_VERSION; install that release's
+# standard CRDs.
 GATEWAY_API_MANIFEST="https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-# Chart versions pinned by NIC at de81b11 (pkg/argocd/templates/apps/*.yaml).
+# cert-manager and trust-manager chart versions are the ones NIC pins.
 JETSTACK_REPO=https://charts.jetstack.io
-CERT_MANAGER_VERSION=v1.17.2
-TRUST_MANAGER_VERSION=v0.22.1
 
 SERVICE_NS=us-system
 LANDING_NS=nebari-system
-KID=e2e-1
+KEYCLOAK_NS=e2e-keycloak
+# The realm's discovery document, as the service and the tests see it.
+KEYCLOAK_ISSUER=https://keycloak.$KEYCLOAK_NS.svc:8443/realms/nebari
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 E2E="$ROOT/test/e2e"
 TMP="$E2E/.tmp"
 FIXTURES="$E2E/fixtures"
@@ -101,27 +104,32 @@ install_nic_ca() {
   wait_for "nebari-trust-bundle in $LANDING_NS" 180 kubectl -n "$LANDING_NS" get configmap nebari-trust-bundle
 }
 
-# gen_key writes the signing key (kept across runs) and its public JWKS.
-gen_key() {
+# install_keycloak deploys Keycloak (start-dev, realm imported from
+# fixtures/keycloak/realm.json, whose test passwords are fixture values, not
+# secrets) with a certificate from NIC's CA issuer, and the kc-client pod the
+# tests request tokens from. It returns once the realm's discovery document
+# answers from inside the cluster with the in-cluster issuer.
+install_keycloak() {
+  log "deploying Keycloak ($KEYCLOAK_IMAGE) with the nebari test realm"
   mkdir -p "$TMP"
-  if [[ ! -f "$TMP/signing-key.pem" ]]; then
-    log "generating the test signing key in $TMP"
-    (umask 077 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$TMP/signing-key.pem" 2>/dev/null)
-  fi
-  local n
-  n=$(openssl rsa -in "$TMP/signing-key.pem" -noout -modulus | cut -d= -f2 | xxd -r -p | basenc --base64url -w0 | tr -d '=')
-  jq -n --arg kid "$KID" --arg n "$n" \
-    '{keys: [{kty: "RSA", use: "sig", alg: "RS256", kid: $kid, n: $n, e: "AQAB"}]}' >"$TMP/jwks.json"
-}
-
-install_jwks() {
-  log "deploying the HTTPS JWKS server"
-  gen_key
-  kubectl apply -f "$FIXTURES/jwks.yaml"
-  kubectl -n e2e-keycloak create configmap jwks-keys --from-file=jwks.json="$TMP/jwks.json" \
+  # Images come from ci/pins.env only; render them into the manifest.
+  sed -e "s|\${KEYCLOAK_IMAGE}|$KEYCLOAK_IMAGE|g" -e "s|\${CURL_IMAGE}|$CURL_IMAGE|g" \
+    "$FIXTURES/keycloak/keycloak.yaml" >"$TMP/keycloak.yaml"
+  # cert-manager's webhook can refuse the Certificate for a few seconds after
+  # install, as trust-manager's does in install_nic_ca, so retry.
+  wait_for "cert-manager webhook to admit the Keycloak manifests" 120 kubectl apply -f "$TMP/keycloak.yaml"
+  kubectl -n "$KEYCLOAK_NS" create configmap keycloak-realm --from-file=nebari.json="$FIXTURES/keycloak/realm.json" \
     --dry-run=client -o yaml | kubectl apply -f -
-  kubectl -n e2e-keycloak wait --for=condition=Ready certificate/jwks-tls --timeout=180s
-  kubectl -n e2e-keycloak rollout status deployment/jwks --timeout=180s
+  kubectl -n "$KEYCLOAK_NS" wait --for=condition=Ready certificate/keycloak-tls --timeout=180s
+  kubectl -n "$KEYCLOAK_NS" rollout status deployment/keycloak --timeout=300s
+  kubectl -n "$KEYCLOAK_NS" wait --for=condition=Ready pod/kc-client --timeout=180s
+  log "waiting for the realm's discovery document from kc-client"
+  local wk=$KEYCLOAK_ISSUER/.well-known/openid-configuration
+  wait_for "$wk from kc-client" 180 kubectl -n "$KEYCLOAK_NS" exec kc-client -- \
+    curl -sSf --max-time 10 --cacert /etc/nebari/trust/ca-certificates.crt "$wk"
+  kubectl -n "$KEYCLOAK_NS" exec kc-client -- \
+    curl -sSf --max-time 10 --cacert /etc/nebari/trust/ca-certificates.crt "$wk" |
+    jq -e --arg iss "$KEYCLOAK_ISSUER" '.issuer == $iss' >/dev/null
 }
 
 # install_consumer creates the registered workload namespaces (e2e-workload,
@@ -184,7 +192,7 @@ case "${1:-}" in
     install_calico
     install_cert_manager
     install_nic_ca
-    install_jwks
+    install_keycloak
     install_consumer
     install_chart
     apply_bundle

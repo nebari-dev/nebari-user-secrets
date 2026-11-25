@@ -36,11 +36,25 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
+// kubeconfigPath is USER_SECRETS_TEST_KUBECONFIG when set (relative to the
+// repo root unless absolute; CI points it at .kube/e2e), else .kube/kind.
+func kubeconfigPath(t *testing.T) string {
+	t.Helper()
+	p := os.Getenv("USER_SECRETS_TEST_KUBECONFIG")
+	if p == "" {
+		p = filepath.Join(".kube", "kind")
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(repoRoot(t), p)
+}
+
 // Namespace returns a client for the kind cluster and a new namespace that is
 // deleted when the test ends.
 func Namespace(t *testing.T) (kubernetes.Interface, string) {
 	t.Helper()
-	cfg, err := clientcmd.BuildConfigFromFlags("", filepath.Join(repoRoot(t), ".kube", "kind"))
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath(t))
 	if err != nil {
 		t.Fatalf("kubeconfig (run make kind-up): %v", err)
 	}

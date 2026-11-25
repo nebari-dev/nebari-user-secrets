@@ -1,47 +1,98 @@
 name: CI
 
+# Job names are required check names in the main ruleset (docs/architecture/contracts.md,
+# "Required check names"): renaming a job is a contract change.
 on:
   pull_request:
+  merge_group:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    # An explicit bash shell runs with -eo pipefail, so `go test ... | tee` fails the step.
+    shell: bash
+
+env:
+  # Commit under test, and the merge queue's head and base (empty outside merge_group).
+  COMMIT: ${{ github.sha }}
+  QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+  QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+
 jobs:
-  ci:
+  pins:
+    runs-on: ubuntu-latest
+    outputs:
+      k8s: ${{ steps.pins.outputs.k8s }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Policy matrix versions from ci/pins.env
+        id: pins
+        run: |
+          source ci/load-pins.sh
+          echo "k8s=$(jq -cn --arg v "$POLICY_K8S_VERSIONS" '$v | [splits(" +")] | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+  tier1:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Load pins
+        # Versions come from ci/pins.env, the only place they are written.
+        run: grep -v '^#' ci/pins.env | grep . >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.4.0
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           # Build with setup-go's toolchain (go.mod's Go 1.26): the prebuilt
-          # v2.4.0 binary is built with Go 1.25 and refuses a Go 1.26 module.
+          # binary of the pinned release is built with Go 1.25 and refuses a
+          # Go 1.26 module.
           install-mode: goinstall
       - uses: azure/setup-helm@v4
         with:
-          version: v4.3.2
-      - run: make test
+          version: ${{ env.HELM_VERSION }}
+      - name: Unit and chart tests
+        # make test's command, with -json for the summary.
+        run: go test ./... -race -cover -json | tee unit.json
+      - name: Summary
+        if: always()
+        run: >-
+          go run ./test/journeys/cmd/summary --tier 1
+          --commit "$COMMIT" --queue-head "$QUEUE_HEAD" --queue-base "$QUEUE_BASE"
+          --results unit.json
 
-  e2e:
+  tier2-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Load pins
+        # Versions come from ci/pins.env, the only place they are written.
+        run: grep -v '^#' ci/pins.env | grep . >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - uses: azure/setup-helm@v4
         with:
-          version: v4.3.2
+          version: ${{ env.HELM_VERSION }}
       - name: Install kind
-        run: go install sigs.k8s.io/kind@v0.33.0
+        run: go install "sigs.k8s.io/kind@${KIND_VERSION}"
       - name: Build the image and bring up us-e2e
+        id: up
         run: make e2e-up
       - name: E2E tests
-        run: make e2e-test
+        run: go test -tags e2e ./test/e2e/... -json -count=1 -timeout 30m | tee e2e.json
+      - name: Integration tests against us-e2e
+        # Runs even when the e2e tests failed, as long as the cluster came up.
+        if: ${{ !cancelled() && steps.up.outcome == 'success' }}
+        env:
+          USER_SECRETS_TEST_KUBECONFIG: .kube/e2e
+        run: go test -tags integration ./internal/... -json -count=1 | tee integration.json
       - name: Dump cluster state on failure
         if: failure()
         env:
@@ -51,3 +102,46 @@ jobs:
           kubectl get pods -A -o wide || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true
           kubectl -n us-system logs -l app.kubernetes.io/name=user-secrets --all-containers --prefix --tail=200 || true
+      - name: Summary
+        if: always()
+        run: >-
+          go run ./test/journeys/cmd/summary --tier 2
+          --commit "$COMMIT" --queue-head "$QUEUE_HEAD" --queue-base "$QUEUE_BASE"
+          --results e2e.json,integration.json
+
+  tier2-policy:
+    name: tier2-policy (${{ matrix.k8s }})
+    needs: pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        k8s: ${{ fromJSON(needs.pins.outputs.k8s) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Drop committed transcript
+        # The checkout holds a committed transcript for this version. Remove
+        # it so the Summary reads only this run's output, and shows the
+        # policy checks as not run if the matrix never ran.
+        env:
+          K8S: ${{ matrix.k8s }}
+        run: rm -f -- "test/policy/results/$K8S.txt"
+      - name: Load pins
+        # Versions come from ci/pins.env, the only place they are written.
+        run: grep -v '^#' ci/pins.env | grep . >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install kind
+        run: go install "sigs.k8s.io/kind@${KIND_VERSION}"
+      - name: Policy matrix
+        run: make policy-test K8S_VERSION=${{ matrix.k8s }}
+      - name: Summary
+        if: always()
+        env:
+          K8S: ${{ matrix.k8s }}
+        run: >-
+          go run ./test/journeys/cmd/summary --tier 2
+          --commit "$COMMIT" --queue-head "$QUEUE_HEAD" --queue-base "$QUEUE_BASE"
+          --policy-results "test/policy/results/$K8S.txt"
