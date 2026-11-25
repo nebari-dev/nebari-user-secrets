@@ -37,3 +37,15 @@
 {{- if not .Values.landing.podSelector -}}
   {{- fail "landing.podSelector is required: an empty selector would admit every pod in the landing namespace" -}}
 {{- end -}}
+{{- $k := .Values.kubernetes | default dict -}}
+{{- $qps := $k.qps | default 0 | float64 -}}
+{{- $burst := $k.burst | default 0 | float64 -}}
+{{- if le $qps 0.0 -}}
+  {{- fail "kubernetes.qps must be a number greater than 0" -}}
+{{- end -}}
+{{- if or (lt $burst 1.0) (ne $burst (float64 (int64 $burst))) -}}
+  {{- fail "kubernetes.burst must be a whole number of at least 1" -}}
+{{- end -}}
+{{- if lt $burst $qps -}}
+  {{- fail "kubernetes.burst must be at least kubernetes.qps" -}}
+{{- end -}}

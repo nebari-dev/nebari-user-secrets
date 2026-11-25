@@ -167,8 +167,11 @@ func (s *KubernetesSecretStore) allow(sub, app string) bool {
 }
 
 // RecordDelivery stores d in the owner's status Secret. It is rate-limited to
-// once a minute per (owner, app) per store, and best-effort: a failed write is
-// recorded on the span and returns nil.
+// once a minute per (owner, app) per store: a call inside the window writes
+// nothing and returns nil. A failed write is not retried within the window and
+// its error is returned for the caller to log; status is advisory and a caller
+// must never fail a resolve on it. A d with a zero LastOK keeps the stored
+// success, and one with a zero LastFailure keeps the stored failure.
 func (s *KubernetesSecretStore) RecordDelivery(ctx context.Context, ownerSub string, d model.DeliveryStatus) error {
 	ctx, sp := span(ctx, "RecordDelivery")
 	defer sp.End()
@@ -177,8 +180,22 @@ func (s *KubernetesSecretStore) RecordDelivery(ctx context.Context, ownerSub str
 	}
 	if err := s.writeStatus(ctx, ownerSub, d); err != nil {
 		sp.RecordError(err)
+		return fmt.Errorf("record delivery: %w", err)
 	}
 	return nil
+}
+
+// mergeStatus overlays the outcome in d onto cur: a success replaces the
+// stored success, a failure the stored failure.
+func mergeStatus(cur, d model.DeliveryStatus) model.DeliveryStatus {
+	if !d.LastOK.IsZero() {
+		cur.LastOK, cur.LastCount = d.LastOK, d.LastCount
+	}
+	if !d.LastFailure.IsZero() {
+		cur.LastFailure, cur.LastReason = d.LastFailure, d.LastReason
+	}
+	cur.App = d.App
+	return cur
 }
 
 func (s *KubernetesSecretStore) writeStatus(ctx context.Context, ownerSub string, d model.DeliveryStatus) error {
@@ -203,7 +220,7 @@ func (s *KubernetesSecretStore) writeStatus(ctx context.Context, ownerSub string
 	replaced := false
 	for i := range list {
 		if list[i].App == d.App {
-			list[i], replaced = d, true
+			list[i], replaced = mergeStatus(list[i], d), true
 		}
 	}
 	if !replaced {

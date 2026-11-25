@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/nebari-dev/nebari-user-secrets/internal/audit"
 	"github.com/nebari-dev/nebari-user-secrets/internal/auth"
@@ -27,6 +28,7 @@ import (
 	"github.com/nebari-dev/nebari-user-secrets/internal/guard"
 	"github.com/nebari-dev/nebari-user-secrets/internal/httpapi"
 	"github.com/nebari-dev/nebari-user-secrets/internal/model"
+	"github.com/nebari-dev/nebari-user-secrets/internal/podidentity"
 	"github.com/nebari-dev/nebari-user-secrets/internal/registry"
 	"github.com/nebari-dev/nebari-user-secrets/internal/service"
 	"github.com/nebari-dev/nebari-user-secrets/internal/store"
@@ -34,6 +36,7 @@ import (
 )
 
 const (
+	resolveAddr    = ":8443"
 	managementAddr = ":8444"
 	healthAddr     = ":8080"
 	maxBackoff     = 30 * time.Second
@@ -89,6 +92,24 @@ func newHTTPServer(addr string, h http.Handler) *http.Server {
 	}
 }
 
+// certGetter supplies the serving certificate (certReloader.GetCertificate).
+type certGetter func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+
+// newTLSServer returns newHTTPServer's server serving TLS 1.2+ with getCert.
+func newTLSServer(addr string, h http.Handler, getCert certGetter) *http.Server {
+	s := newHTTPServer(addr, h)
+	s.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: getCert}
+	return s
+}
+
+// newResolveServer returns the resolve server, which speaks HTTP/1.1 only.
+func newResolveServer(addr string, h http.Handler, getCert certGetter) *http.Server {
+	s := newTLSServer(addr, h, getCert)
+	// No h2: one small request per pod gains nothing from it, and it drops the h2-specific attack surface.
+	s.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
+	return s
+}
+
 func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -115,9 +136,9 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("kubernetes config: %w", err)
 	}
-	cs, err := kubernetes.NewForConfig(rc)
+	cs, guardCS, err := newClientsets(rc, cfg.Kubernetes)
 	if err != nil {
-		return fmt.Errorf("kubernetes client: %w", err)
+		return err
 	}
 
 	aud := audit.NewSlogAuditSink(logger)
@@ -128,20 +149,23 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	keys := auth.NewJWKSKeySet(cfg.Keycloak.JWKSURL, &http.Client{Timeout: 10 * time.Second}, time.Now)
 	verifier := auth.NewSessionVerifier(keys, cfg.Keycloak.Issuers, cfg.Keycloak.ClientID, time.Now)
-	g, guardStarters, err := newGuard(cfg, cs, reg, aud)
+	g, guardStarters, err := newGuard(cfg, guardCS, reg, aud)
 	if err != nil {
 		return err
 	}
 	mgmt := httpapi.NewManagementHandler(verifier, svc, reg, g, logger)
+	pods := podidentity.NewPodVerifier(podidentity.NewKubeTokenReviewer(cs), podidentity.NewKubePodGetter(cs), reg)
+	resolve := httpapi.NewResolveHandler(pods, svc, g, aud, logger)
 
 	certs, err := newCertReloader(cfg.TLS.CertFile, cfg.TLS.KeyFile, logger)
 	if err != nil {
 		return err
 	}
 	var kekReady atomic.Bool
-	gate := &kekGate{}
+	gate, resolveGate := &kekGate{}, &kekGate{}
 	onReady := func() {
 		gate.set(mgmt)
+		resolveGate.set(resolve)
 		kekReady.Store(true)
 		logger.Info("master key ready")
 	}
@@ -149,7 +173,7 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	// Health first, so a slow API server during bootstrap still leaves the
 	// pod with /healthz; /readyz stays 503 until the master key is loaded.
 	healthSrv := newHTTPServer(healthAddr, healthHandler(&kekReady))
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	go func() { errc <- healthSrv.ListenAndServe() }()
 	// The guard runs in the background from here on: its informers and probes
 	// never delay the health server or the master-key bootstrap.
@@ -165,11 +189,12 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		onReady()
 	}
 
-	tlsSrv := newHTTPServer(managementAddr, gate)
-	tlsSrv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.GetCertificate}
+	tlsSrv := newTLSServer(managementAddr, gate, certs.GetCertificate)
+	resolveSrv := newResolveServer(resolveAddr, resolveGate, certs.GetCertificate)
 
 	go func() { errc <- tlsSrv.ListenAndServeTLS("", "") }()
-	logger.Info("serving", "management", managementAddr, "health", healthAddr)
+	go func() { errc <- resolveSrv.ListenAndServeTLS("", "") }()
+	logger.Info("serving", "resolve", resolveAddr, "management", managementAddr, "health", healthAddr)
 
 	var serveErr error
 	select {
@@ -178,13 +203,32 @@ func serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	sc, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	for _, s := range []*http.Server{tlsSrv, healthSrv} {
+	for _, s := range []*http.Server{resolveSrv, tlsSrv, healthSrv} {
 		_ = s.Shutdown(sc)
 	}
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
 	}
 	return nil
+}
+
+// newClientsets returns two clientsets on rc. The first, for the store, the
+// master key and pod verification, has one rate limiter shared by all API
+// groups, set from k. The second is the guard's alone, with client-go's
+// defaults, so resolve traffic never queues the guard's probes. rc is not
+// modified.
+func newClientsets(rc *rest.Config, k config.Kubernetes) (*kubernetes.Clientset, *kubernetes.Clientset, error) {
+	src := rest.CopyConfig(rc)
+	src.QPS, src.Burst = k.QPS, k.Burst
+	cs, err := kubernetes.NewForConfig(src)
+	if err != nil {
+		return nil, nil, fmt.Errorf("kubernetes client: %w", err)
+	}
+	guardCS, err := kubernetes.NewForConfig(rest.CopyConfig(rc))
+	if err != nil {
+		return nil, nil, fmt.Errorf("kubernetes guard client: %w", err)
+	}
+	return cs, guardCS, nil
 }
 
 // starter is a guard dependency that runs until ctx ends (the informers).

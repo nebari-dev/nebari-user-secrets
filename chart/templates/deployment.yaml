@@ -44,6 +44,8 @@ spec:
             - name: SSL_CERT_FILE
               value: /etc/nebari/trust/ca-certificates.crt
           ports:
+            - name: resolve
+              containerPort: 8443
             - name: management
               containerPort: 8444
             - name: health

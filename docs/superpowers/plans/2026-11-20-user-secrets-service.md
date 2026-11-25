@@ -527,6 +527,32 @@ Task reviews: Task 15 approved (Minor round; kustomize test found an over-indent
 - [ ] **Step 1: Write** `TestResolveFromLabelledPod`: as `tc-creator`, create a labelled pod (hand-built: projected token volume, a curl image calling resolve with the trust bundle); its log shows exactly the user's `test-consumer` secrets. `TestCrossUserIsolation` (journey 7, service half): user B's pod gets none of A's; an unlabelled pod with the token gets 403; `TestDecryptFailedOnKind`.
 - [ ] **Step 2: Run**: PASS after wiring. Update `docs/architecture/contracts.md` (resolve API, pod metadata).
 
+**Evidence (2026-11-24, Go 1.26.11 toolchain, kind us-e2e on kindest/node:v1.34.3, Calico v3.32.3, NIC templates at `de81b11`):**
+```
+$ go test ./... -race -cover
+ok cmd/user-secrets 42.7%   ok internal/podidentity 100.0%  ok internal/httpapi 98.0%  ok internal/service 91.8%
+ok internal/store 84.9%     ok internal/guard 94.2%         ok internal/auth 96.0%     ok internal/registry 98.6%
+ok internal/crypto 91.2%    ok internal/config 90.0%        ok internal/admin 81.5%    ok internal/audit 100.0%
+ok internal/model 100.0%    ok internal/telemetry 91.3%     ok cmd/user-secrets-init 66.7%   ok test/chart
+$ go test -count=1 -race ./internal/... -run 'TestResolveFiltersByApp|TestPodVerifier' -v
+--- PASS: TestPodVerifier (0.00s)
+--- PASS: TestResolveFiltersByApp (0.46s)
+$ go test -tags e2e ./test/e2e/... -run 'TestResolve|TestCrossUser|TestDecryptFailed' -v
+--- PASS: TestResolveFromLabelledPod (3.54s)
+--- PASS: TestCrossUserIsolation (4.72s)
+--- PASS: TestDecryptFailedOnKind (3.74s)
+--- PASS: TestResolveGuard (39.09s)
+--- PASS: TestResolveDeniedAudit (5.65s)
+ok test/e2e 56.748s
+$ make e2e-test   -> 15/15 PASS (118.1 s, rerun after Task 21b), incl. TestServiceReadyUnderPolicy (now asserts both ingress rules exactly) and TestDurabilityThroughResolve
+$ GOTOOLCHAIN=go1.26.11 make lint -> 0 issues;  go vet ./... -> no output
+```
+Journeys: 7 partial: on kind, user B's labelled pod resolves only B's secrets and none of A's, an unlabelled pod with its projected token gets 403 `not_annotated`, and A's management token at resolve gets 401 `not_pod_bound` (`TestCrossUserIsolation`); the API-server refusals (non-creator, label or annotation changes, and the rest) are the policy matrix in `test/policy` (Slice 5). The two-real-Keycloak-users version waits for the CI slice's Keycloak. 8 covered: (a) `TestPodVerifier` (dask-annotated pod as the notebook SA gets 403), (b) `TestResolveFiltersByApp`, (c) on kind, a user's Keycloak management token at resolve gets 401 `not_pod_bound` (`TestCrossUserIsolation`; the `internal/httpapi` case proves only the 401 mapping); a token with `user-secrets` in `aud` is not tested yet, (d) unchanged from Slice 3. 9 re-checked through resolve: after `rollout restart` and `helm upgrade` resolve returns the stored value. 11 partial: `secret_read` lines carry owner_sub, reader_sub, secret, app, pod, pod_uid, sa, guard, and each denial writes exactly one `resolve_denied` with its reason, with no value or token substrings (unit table `TestResolveHandler`; on kind `TestResolveDeniedAudit` checks one reason, `not_annotated`); the narrated `kubectl logs` excerpt waits for a dev cluster. 12 delivery half on kind: with binding B at `[Warn]` resolve answers 503 `guard_not_verified`; a labelled pod created while B was at `[Warn]` is refused 403 `pod_predates_guard` after restore, and a pod created afterwards resolves (`TestResolveGuard`); the notebook `.status` half needs Slice 7. 17 partial: an unregistered SA records `not_registered` as the app's last failure and a pod that fails verification changes no user's status (unit: `TestResolveHandler`, `TestRecordDeliveryKeepsOtherOutcome`; not yet read back through `GET /api/v1/secrets`); soft and strict init behaviour is Slice 7. 20: copying A's sealed entry into B's record makes resolve for B fail with `decrypt_failed` and return nothing of A's (`TestDecryptFailedOnKind`).
+Found on the real cluster: an HTTP/2 client kept waiting until the post-response status write returned, so the resolve server is HTTP/1.1 only (`TestTLSServerProtocols`) and recorded responses carry `Content-Length`. A pod created within about 30 s after `verifiedSince` moves is refused `pod_predates_guard` for its lifetime (documented in `contracts.md`; Slice 7's init container will see it).
+Found in the fresh-eyes review: the single Kubernetes client ran on client-go's default 5 req/s, burst 10 per API group (client-go v0.35.0 `rest/config.go:47-48`), so a pod-start burst queued and resolve traffic could delay the guard's probes into `unknown`. Task 21b (user-approved): the guard has its own client; the store, master key and pod verification share one limiter set by `kubernetes.qps`/`burst` (default 50/100); each resolve's Kubernetes calls are bounded by 20 s and answer 503 `kubernetes_unavailable` on timeout.
+CI: the `ci` job had failed on every PR since #2 because golangci-lint-action's prebuilt v2.4.0 binary is built with Go 1.25 and refuses this Go 1.26 module (lint was only ever run locally). `ci.yml` now sets `install-mode: goinstall`, so the same v2.4.0 is built with go.mod's toolchain.
+Task reviews: Task 19 approved after fix round 1 (4 addressed). Task 20 approved after fix round 1 (Content-Length, owner mismatch maps to `decrypt_failed`, token pod identity on `resolve_denied`, HTTP/1.1-only ruling). Task 21 approved with no Critical or Important findings; 6 Minor parked for the final review. Task 21b approved, 4 Minor parked. Fresh-eyes over the whole slice: 1 Important (the throttling, fixed by Task 21b), 9 Minor parked or fixed (evidence wording).
+
 **Checkpoint (controller, after the last task; implementers ignore):** run validation, paste evidence, open PR(s), STOP for go-ahead.
 
 ---

@@ -15,8 +15,13 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	"github.com/nebari-dev/nebari-user-secrets/internal/crypto"
 	"github.com/nebari-dev/nebari-user-secrets/internal/model"
@@ -24,8 +29,9 @@ import (
 )
 
 // TestServiceReadyUnderPolicy: with the chart's NetworkPolicy in force (which
-// admits only 8444 from the landing pods), every replica still passes the
-// kubelet's readiness probe on 8080.
+// admits only 8444 from the landing pods and 8443 from the registered workload
+// namespaces), every replica still passes the kubelet's readiness probe on
+// 8080.
 func TestServiceReadyUnderPolicy(t *testing.T) {
 	ctx := context.Background()
 	cs := kube(t)
@@ -33,12 +39,49 @@ func TestServiceReadyUnderPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NetworkPolicy: %v", err)
 	}
-	in := np.Spec.Ingress
-	if len(in) != 1 || len(in[0].Ports) != 1 {
-		t.Fatalf("NetworkPolicy ingress = %+v, want one rule with one port", in)
+	if got := np.Spec.PolicyTypes; len(got) != 1 || got[0] != networkingv1.PolicyTypeIngress {
+		t.Fatalf("NetworkPolicy policyTypes = %v, want [Ingress]", got)
 	}
-	if port := in[0].Ports[0].Port; port == nil || port.IntValue() != 8444 {
-		t.Fatalf("NetworkPolicy ingress port = %v, want 8444 (a nil port admits every port)", port)
+	tcp := corev1.ProtocolTCP
+	rule := func(port int, peer networkingv1.NetworkPolicyPeer) networkingv1.NetworkPolicyIngressRule {
+		return networkingv1.NetworkPolicyIngressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: ptr.To(intstr.FromInt32(int32(port)))}},
+			From:  []networkingv1.NetworkPolicyPeer{peer},
+		}
+	}
+	// Exactly as the chart renders them for test/e2e/fixtures: the landing
+	// pods (namespace and pod selector) on 8444, the registered workload
+	// namespaces (sorted) on 8443, no other peer and no other port.
+	wantRules := []networkingv1.NetworkPolicyIngressRule{
+		rule(8444, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": landingNS}},
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "nebari-landing"}},
+		}),
+		rule(8443, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key: "kubernetes.io/metadata.name", Operator: metav1.LabelSelectorOpIn,
+				Values: []string{workloadNS, consumerNS},
+			}}},
+		}),
+	}
+	in := np.Spec.Ingress
+	if len(in) != len(wantRules) {
+		t.Fatalf("NetworkPolicy ingress = %+v, want %d rules", in, len(wantRules))
+	}
+	for i, r := range in {
+		if len(r.Ports) != 1 {
+			t.Fatalf("NetworkPolicy ingress rule %d ports = %+v, want one port", i, r.Ports)
+		}
+		if port := r.Ports[0].Port; port == nil || port.IntValue() != wantRules[i].Ports[0].Port.IntValue() {
+			t.Fatalf("NetworkPolicy ingress rule %d port = %v, want %d (a nil port admits every port)",
+				i, port, wantRules[i].Ports[0].Port.IntValue())
+		}
+		if len(r.From) == 0 {
+			t.Fatalf("NetworkPolicy ingress rule %d has no peers (admits every source)", i)
+		}
+		if !equality.Semantic.DeepEqual(r, wantRules[i]) {
+			t.Fatalf("NetworkPolicy ingress rule %d = %+v, want %+v", i, r, wantRules[i])
+		}
 	}
 	mustRun(t, 3*time.Minute, "kubectl", "-n", serviceNS, "rollout", "status", "deployment/user-secrets", "--timeout=150s")
 	dep, err := cs.AppsV1().Deployments(serviceNS).Get(ctx, "user-secrets", metav1.GetOptions{})
@@ -393,8 +436,9 @@ func TestNetworkExposure(t *testing.T) {
 		{"control: workload pod reaches the JWKS server", workloadNS, "workload-client", jwks, true},
 		{"workload namespace is blocked", workloadNS, "workload-client", mgmt, false},
 		{"landing pod connects", landingNS, "landing-proxy", mgmt, true},
-		// Nothing listens on 8443 yet, so an admitted port would answer
-		// "connection refused"; only a policy drop times out.
+		// The service listens on 8443 (resolve), but the policy admits it only
+		// from registered workload namespaces; the landing namespace is not
+		// one, so the connection is dropped and times out.
 		{"landing pod is blocked from 8443", landingNS, "landing-proxy", serviceHost + ":8443", false},
 	}
 	for _, tt := range tests {

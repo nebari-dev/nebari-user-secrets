@@ -17,6 +17,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.4.0
+          # Build with setup-go's toolchain (go.mod's Go 1.26): the prebuilt
+          # v2.4.0 binary is built with Go 1.25 and refuses a Go 1.26 module.
+          install-mode: goinstall
       - uses: azure/setup-helm@v4
         with:
           version: v4.3.2

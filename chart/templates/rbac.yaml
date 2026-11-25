@@ -46,3 +46,34 @@ subjects:
   - kind: ServiceAccount
     name: user-secrets
     namespace: {{ .Release.Namespace }}
+{{- /* Resolve reads the caller's pod by name in each registered workload namespace. */}}
+{{- range include "user-secrets.workloadNamespaces" . | fromJsonArray }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: user-secrets-pod-reader
+  namespace: {{ . | quote }}
+  labels:
+    {{- include "user-secrets.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: user-secrets-pod-reader
+  namespace: {{ . | quote }}
+  labels:
+    {{- include "user-secrets.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: user-secrets-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: user-secrets
+    namespace: {{ $.Release.Namespace }}
+{{- end }}

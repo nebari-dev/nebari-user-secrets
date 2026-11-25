@@ -29,16 +29,33 @@ const ns = "us"
 
 type writeEvent struct{ owner, actor, secret, action string }
 
+type readEvent struct {
+	owner, reader, secret string
+	claim                 model.PodClaim
+	mode                  model.GuardMode
+}
+
+type keyEvent struct{ event, owner, actor, detail string }
+
 type fakeAudit struct {
 	mu     sync.Mutex
 	events []writeEvent
+	reads  []readEvent
+	keys   []keyEvent
 }
 
-func (f *fakeAudit) SecretRead(context.Context, string, string, string, model.PodClaim, model.GuardMode) {
+func (f *fakeAudit) SecretRead(_ context.Context, owner, reader, secret string, c model.PodClaim, g model.GuardMode) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads = append(f.reads, readEvent{owner, reader, secret, c, g})
 }
 func (f *fakeAudit) ResolveDenied(context.Context, model.PodIdentity, string) {}
 func (f *fakeAudit) GuardChanged(context.Context, string, string, string)     {}
-func (f *fakeAudit) KeyEvent(context.Context, string, string, string, string) {}
+func (f *fakeAudit) KeyEvent(_ context.Context, event, owner, actor, detail string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keys = append(f.keys, keyEvent{event, owner, actor, detail})
+}
 func (f *fakeAudit) SecretWrite(_ context.Context, owner, actor, secret, action string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

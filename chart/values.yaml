@@ -38,6 +38,15 @@ guard:
   # this namespace is then trusted with every user's secrets.
   allowSharedNamespace: false
 
+# Client-side rate limit of the service's Kubernetes client for the store, the
+# master key and pod verification (TokenReview, pod reads): one token bucket
+# shared by all API groups. qps must be greater than 0 and burst a whole number
+# of at least 1 and at least qps. The policy guard has its own client with
+# client-go's defaults, so resolve traffic never delays its probes.
+kubernetes:
+  qps: 50
+  burst: 100
+
 # Optional overrides of the built-in limits (0 or unset keeps the default):
 # MaxSecrets (50), MaxValueBytes (32768), MaxRecordBytes (524288).
 limits: {}

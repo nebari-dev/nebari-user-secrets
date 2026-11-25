@@ -1,0 +1,39 @@
+# Consumer namespace for the resolve tests. tc-workload is the registered
+# workload ServiceAccount of app test-consumer; tc-creator is its registered
+# creator (values-consumer.yaml), which the tests impersonate to create
+# labelled pods, so policy B sees the creator's username. Pod Security
+# enforces restricted here, so the consumer pods must comply.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-consumer
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tc-workload
+  namespace: test-consumer
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tc-creator
+  namespace: test-consumer
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tc-creator-edit
+  namespace: test-consumer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+  - kind: ServiceAccount
+    name: tc-creator
+    namespace: test-consumer

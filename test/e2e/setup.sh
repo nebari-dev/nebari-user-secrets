@@ -91,7 +91,11 @@ install_cert_manager() {
 
 install_nic_ca() {
   log "applying NIC's cluster CA and trust bundle (letsencrypt rendering)"
-  (cd "$ROOT" && go run -tags e2e ./test/e2e/nicrender -dir "$FIXTURES/nic") | kubectl apply -f -
+  mkdir -p "$TMP"
+  (cd "$ROOT" && go run -tags e2e ./test/e2e/nicrender -dir "$FIXTURES/nic") >"$TMP/nic-ca.yaml"
+  # trust-manager's webhook can refuse connections for a few seconds after
+  # helm reports it ready (its Service is not yet routable), so retry.
+  wait_for "trust-manager webhook to admit NIC's CA and bundle" 120 kubectl apply -f "$TMP/nic-ca.yaml"
   kubectl -n cert-manager wait --for=condition=Ready certificate/nebari-root-ca --timeout=180s
   kubectl create namespace "$LANDING_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   wait_for "nebari-trust-bundle in $LANDING_NS" 180 kubectl -n "$LANDING_NS" get configmap nebari-trust-bundle
@@ -120,12 +124,23 @@ install_jwks() {
   kubectl -n e2e-keycloak rollout status deployment/jwks --timeout=180s
 }
 
+# install_consumer creates the registered workload namespaces (e2e-workload,
+# whose pods come from clients.yaml later, and test-consumer with its
+# ServiceAccounts) before the chart, which renders a pod-reader Role into every
+# registered workload namespace.
+install_consumer() {
+  log "creating the e2e-workload and test-consumer namespaces, workload and creator ServiceAccounts"
+  kubectl create namespace e2e-workload --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl apply -f "$FIXTURES/consumer.yaml"
+}
+
 install_chart() {
   log "loading $IMG into $CLUSTER and installing the chart"
   kind load docker-image "$IMG" --name "$CLUSTER"
   kubectl create namespace "$SERVICE_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   helm upgrade --install user-secrets "$ROOT/chart" --namespace "$SERVICE_NS" \
-    -f "$FIXTURES/values.yaml" --set-string image="$IMG" --wait --timeout 5m
+    -f "$FIXTURES/values.yaml" -f "$FIXTURES/values-consumer.yaml" \
+    --set-string image="$IMG" --wait --timeout 5m
 }
 
 # restart_service moves the pods onto the image just loaded: the tag does not
@@ -170,6 +185,7 @@ case "${1:-}" in
     install_cert_manager
     install_nic_ca
     install_jwks
+    install_consumer
     install_chart
     apply_bundle
     restart_service
