@@ -91,7 +91,11 @@ install_cert_manager() {
 
 install_nic_ca() {
   log "applying NIC's cluster CA and trust bundle (letsencrypt rendering)"
-  (cd "$ROOT" && go run -tags e2e ./test/e2e/nicrender -dir "$FIXTURES/nic") | kubectl apply -f -
+  mkdir -p "$TMP"
+  (cd "$ROOT" && go run -tags e2e ./test/e2e/nicrender -dir "$FIXTURES/nic") >"$TMP/nic-ca.yaml"
+  # trust-manager's webhook can refuse connections for a few seconds after
+  # helm reports it ready (its Service is not yet routable), so retry.
+  wait_for "trust-manager webhook to admit NIC's CA and bundle" 120 kubectl apply -f "$TMP/nic-ca.yaml"
   kubectl -n cert-manager wait --for=condition=Ready certificate/nebari-root-ca --timeout=180s
   kubectl create namespace "$LANDING_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   wait_for "nebari-trust-bundle in $LANDING_NS" 180 kubectl -n "$LANDING_NS" get configmap nebari-trust-bundle
