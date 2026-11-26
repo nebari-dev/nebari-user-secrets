@@ -62,10 +62,10 @@ Journey IDs are the spec's J1...J22 (`docs/design/user-secrets-spec.md` "Journey
 | J7.3 | F4 | dask-gateway-pack's DaskCluster policy | - | not-covered: lives in dask-gateway-pack |
 | J8.1 | F4 | Wrong app, wrong SA, user tokens at resolve, wrong client at management | 1 | covered |
 | J9.1 | F11 | Restart and `helm upgrade` keep secrets; a replica answers throughout | 2 | covered |
-| J10.1 | F1 | Rotate reaches pods started afterwards; delete removes it | 3 (test-consumer pod) | planned: Slice 9 (init container) |
+| J10.1 | F1 | Rotate reaches pods started afterwards; delete removes it | 3 (test-consumer pod) | planned: Slice 11 (Task 36) |
 | J11.1 | F7 | `secret_read` and `resolve_denied` lines, no value substrings | 1 and 2 | covered |
 | J12.1 | F4 | Guard fail-closed table and on kind | 1 and 2 | covered |
-| J13.1 | F3 | Byte-for-byte values in a test-consumer pod | 3 | planned: Slice 9 |
+| J13.1 | F3 | Byte-for-byte values in a test-consumer pod | 2 | covered |
 | J13.2 | F3 | Byte-for-byte in notebook and Dask pods | 3 | not-covered: pack integrations not released |
 | J14.1 | F8 | New consumer by values only, on kind | 2 | planned: Slice 10 |
 | J14.2 | F8 | New consumer pack installed by Argo CD on real Nebari resolves its secrets | 3 | planned: Slice 10 |
@@ -73,7 +73,8 @@ Journey IDs are the spec's J1...J22 (`docs/design/user-secrets-spec.md` "Journey
 | J15.2 | F9 | dsp and dask-gateway-pack golden files | - | not-covered: lives in those repos |
 | J16.1 | F3 | Dask keeps scaling after the session ends | - | not-covered: dask-gateway-pack integration not released |
 | J17.1 | F5 | Status after a failed resolve; unregistered SA; verification failure changes no status | 2 | covered |
-| J17.2 | F5 | Soft and strict init behaviour | 1 and 2 | planned: Slice 9 |
+| J17.2 | F5 | Soft and strict init behaviour, unit | 1 | covered |
+| J17.3 | F5 | Soft and strict init behaviour on kind | 2 | covered |
 | J18.1 | F12 | Sharing warning in the dsp share dialog | - | not-covered: dsp UI, not this repo |
 | J19.1 | F10 | Chart has no route; NetworkPolicy enforced by Calico | 1 and 2 | covered |
 | J20.1 | F6 | Records hold no plaintext; swapped keys fail with `decrypt_failed` | 1 and 2 | covered |
@@ -288,7 +289,7 @@ type Results map[string]string                           // check id -> pass | f
 + test/journeys/catalog/              package catalog + catalog_test.go (Tier 1)
 + test/journeys/cmd/summary/main.go   writes $GITHUB_STEP_SUMMARY (follows cmd/<binary> under the test tree)
 + test/journeys/gitops/user-secrets.yaml   Argo CD Application for register-app.sh
-+ test/journeys/nebari_test.go        //go:build journeys; P3.1, J1.3, later J10.1, J13.1, J14.2, J22.2
++ test/journeys/nebari_test.go        //go:build journeys; P3.1, J1.3, later J10.1, J14.2, J22.2
 + docs/ci/coverage.md                 generated
 ~ docs/architecture/contracts.md      pins file, catalog, check names
 ```
@@ -403,9 +404,9 @@ The definition of done for the CI work itself (IDs C1...C8, separate from the se
 | 6 | Resolve | nebari-user-secrets | nebari-user-secrets#7 | Slice 5 | 7, 8, 11, 12, 17 |
 | 7 | CI tiers 1 and 2 with a journey catalog | nebari-user-secrets | nebari-user-secrets#8 | Slice 6 | 1, 7 |
 | 8 | Tier 3 on a real Nebari and the turn-on report | nebari-user-secrets | nebari-user-secrets#9 | Slice 7 | 1 |
-| 9 | Init container and env wrapper | nebari-user-secrets | nebari-user-secrets#10 | Slice 8 | 13, 17 |
-| 10 | Injector | nebari-user-secrets | nebari-user-secrets#11 | Slice 9 | 14, 22, 7, 6 |
-| 11 | Release and operations | nebari-user-secrets | nebari-user-secrets#12 | Slice 10 | 21 |
+| 9 | Init container and env wrapper | nebari-user-secrets | nebari-user-secrets#11 | Slice 8 | 13, 17 |
+| 10 | Injector | nebari-user-secrets | nebari-user-secrets#12 | Slice 9 | 14, 22, 7, 6 |
+| 11 | Release and operations | nebari-user-secrets | nebari-user-secrets#13 | Slice 10 | 21 |
 
 Merge order: nebari-user-secrets#1 (design) -> #2 -> #3 -> #4 -> #5 -> #6 -> #7 -> #8 -> #9 -> #10 -> #11 -> #12. Each PR's base is the previous slice's branch.
 
@@ -1121,7 +1122,7 @@ Task reviews: Task 26 approved after fix round 1 (GITHUB_OUTPUT validation). Tas
 ## Slice 9: Init container and env wrapper
 **Goal:** A pod with the init container gets its secrets as exact-byte files, optionally as environment variables, and a readable reason when delivery fails.
 **Repos / branches:** nebari-user-secrets: `feat/us-09-init` (base: `feat/us-08-tier3`)
-**PRs:** nebari-user-secrets#10 "user-secrets-init and user-secrets-env" (links spec + plan)
+**PRs:** nebari-user-secrets#11 "user-secrets-init and user-secrets-env" (links spec + plan)
 **Depends on:** Slice 8
 **Contracts touched:** File layout under `/var/run/nebari/secrets`, `user-secrets-env -- <cmd>` wrapper behaviour
 **Docs updated:** docs/architecture/contracts.md
@@ -1163,6 +1164,23 @@ Task reviews: Task 26 approved after fix round 1 (GITHUB_OUTPUT validation). Tas
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement.** **Step 4: Run**: PASS.
 - [ ] **Step 5: e2e** `TestInitDeliversFiles` in `test/e2e/init_test.go`: the Slice 6 hand-built pod now uses the real init image; `sha256sum` in the main container matches the uploaded journey-13 bytes; with the NetworkPolicy blocking `test-consumer`, `.status` reads `error unreachable` and the wrapper prints its warning (journey 17). Update `docs/architecture/contracts.md`.
 
+**Evidence (2026-11-26, Go 1.26.11 toolchain, kind us-e2e created fresh on kindest/node:v1.34.3, Calico v3.32.3, Keycloak 26.8.1, NIC templates at `de81b11`):**
+```
+$ go test ./... -race -cover -count=1   -> every package ok; internal/initfiles 94.9%, cmd/user-secrets-init 88.3%
+$ GOTOOLCHAIN=go1.26.11 make lint        -> 0 issues
+$ make e2e-down && make e2e-up && make e2e-test -> 16/16 top-level PASS (161.5 s), 0 "lost connection"
+$ go test -tags e2e ./test/e2e/... -run TestInit -v -count=1 -> --- PASS: TestInitDeliversFiles (38.8 s)
+After the fresh-eyes fixes (workload as UID 1000 GID 1000, init as 65532, fsGroup 2000), full make e2e-test again: 16/16 PASS.
+TestInitDeliversFiles observes: main container id 1000:1000; user-secrets-env 550:2000 and runnable by UID 1000;
+  .status "ok 3"; every NEBARI_SECRET_* file 440 with group 2000 and sha256 equal to the stored bytes (journey 13 value
+  {"k":"a$$b$(HOME){username}"} + "\n" + 0xff); env vars equal the files and a variable the container already set is kept;
+  in a namespace the NetworkPolicy blocks: soft pod starts with "error unreachable ... after 5 attempts", no secret files,
+  one wrapper warning line; strict pod's init exits 1 and the main container never starts.
+```
+Journeys: 13 covered on kind (exact bytes through the init container, catalog J13.1 tier 2); 17 covered (J17.2 unit `TestInitMain`, `TestExecWithEnv`; J17.3 on kind). Coverage doc: 22 of 37 journey checks.
+Found during the slice: a final retry ran on an expired context and replaced the server's 503 code with `unreachable` (fixed: no attempt starts that the budget cannot cover; 200/200 real-clock runs); the resolve client had no dial timeout, so a NetworkPolicy-dropped connection used the whole budget in one attempt (fixed: 5 s dial and TLS handshake timeouts, 5 attempts observed on kind); every failure now removes previously written secret files (spec: a failed delivery writes no secret files); the e2e test first ran init and workload as the same user, so it could not show a different user reading the files (fixed: workload UID 1000, fsGroup 2000; it passed without a code change). Misconfiguration exits 2 in every mode (user decision).
+Task reviews: Task 29 approved (5 Minor parked). Task 30 approved after fix rounds 1 and 2 (budget, fail-closed clearing through `FileWriter.Fail`). Task 31 approved after fix round 1 (dial timeouts). Fresh-eyes over the slice: 1 Important fixed (cross-user e2e), 5 Minor fixed, 4 parked.
+
 **Checkpoint (controller, after the last task; implementers ignore):** run validation, paste evidence, open PR(s), STOP for go-ahead.
 
 ---
@@ -1170,7 +1188,7 @@ Task reviews: Task 26 approved after fix round 1 (GITHUB_OUTPUT validation). Tas
 ## Slice 10: Injector
 **Goal:** A pack that sets only the ServiceAccount, label and annotations gets secrets delivered, and its failure mode decides what happens while the injector is down.
 **Repos / branches:** nebari-user-secrets: `feat/us-10-injector` (base: `feat/us-09-init`)
-**PRs:** nebari-user-secrets#11 "Injector webhook" (links spec + plan)
+**PRs:** nebari-user-secrets#12 "Injector webhook" (links spec + plan)
 **Depends on:** Slice 9
 **Contracts touched:** Injector `MutatingWebhookConfiguration` `user-secrets-injector` and its patch, Optional pod metadata (label `nebari.dev/user-secrets-failure`; annotations `nebari.dev/user-secrets-export-env` and `-containers`), Consumer contract (`docs/architecture/contracts.md`), Cluster bundle (`cluster/` with `cluster/REVIEW.md`)
 **Docs updated:** docs/architecture/contracts.md, cluster/REVIEW.md
@@ -1216,7 +1234,7 @@ Task reviews: Task 26 approved after fix round 1 (GITHUB_OUTPUT validation). Tas
 ## Slice 11: Release and operations
 **Goal:** Operators can install a released version, back up and rotate the master key, and roll the guard out from `[Warn, Audit]` to `[Deny]` by following written steps.
 **Repos / branches:** nebari-user-secrets: `feat/us-11-release` (base: `feat/us-10-injector`)
-**PRs:** nebari-user-secrets#12 "Release workflow and operations guide" (links spec + plan)
+**PRs:** nebari-user-secrets#13 "Release workflow and operations guide" (links spec + plan)
 **Depends on:** Slice 10
 **Contracts touched:** Master-key Secret `user-secrets-kek` and the `user-secrets admin` commands
 **Docs updated:** docs/architecture/contracts.md, docs/operations.md, README.md

@@ -96,12 +96,12 @@ Journey IDs are the spec's J1...J22 (`docs/design/user-secrets-spec.md` "Journey
 | J7.3 | F4 | dask-gateway-pack's DaskCluster policy | - | not-covered: lives in dask-gateway-pack |
 | J8.1 | F4 | Wrong app, wrong SA, user tokens at resolve, wrong client at management | 1 | covered |
 | J9.1 | F11 | Restart and `helm upgrade` keep secrets; a replica answers throughout | 2 | covered |
-| J10.1 | F1 | Rotate reaches pods started afterwards; delete removes it | 3 (test-consumer pod) | planned: Slice 9 (init container) |
+| J10.1 | F1 | Rotate reaches pods started afterwards; delete removes it | 3 (test-consumer pod) | planned: Slice 11 (Task 36) |
 | J11.1 | F7 | Audit sink and handler: `secret_read` fields, one `resolve_denied` per denial reason, no value or token substrings | 1 | covered |
 | J11.2 | F7 | On kind: `resolve_denied` line for a rejected call, no value or token substrings | 2 | covered |
 | J12.1 | F4 | Guard comparison and state table (every confirmed-bad cause) | 1 | covered |
 | J12.2 | F4 | On kind: guard fail-closed, `verifiedSince` moves, resolve refused while unverified and for predating pods | 2 | covered |
-| J13.1 | F3 | Byte-for-byte values in a test-consumer pod | 3 | planned: Slice 9 |
+| J13.1 | F3 | Byte-for-byte values in a test-consumer pod | 2 | covered |
 | J13.2 | F3 | Byte-for-byte in notebook and Dask pods | 3 | not-covered: pack integrations not released |
 | J14.1 | F8 | New consumer by values only, on kind | 2 | planned: Slice 10 |
 | J14.2 | F8 | New consumer pack installed by Argo CD on real Nebari resolves its secrets | 3 | planned: Slice 10 |
@@ -109,8 +109,8 @@ Journey IDs are the spec's J1...J22 (`docs/design/user-secrets-spec.md` "Journey
 | J15.2 | F9 | dsp and dask-gateway-pack golden files | - | not-covered: lives in those repos |
 | J16.1 | F3 | Dask keeps scaling after the session ends | - | not-covered: dask-gateway-pack integration not released |
 | J17.1 | F5 | Status after a failed resolve; unregistered SA; verification failure changes no status | 1 | covered |
-| J17.2 | F5 | Soft and strict init behaviour, unit | 1 | planned: Slice 9 |
-| J17.3 | F5 | Soft and strict init behaviour on kind | 2 | planned: Slice 9 |
+| J17.2 | F5 | Soft and strict init behaviour, unit | 1 | covered |
+| J17.3 | F5 | Soft and strict init behaviour on kind | 2 | covered |
 | J18.1 | F12 | Sharing warning in the dsp share dialog | - | not-covered: dsp UI, not this repo |
 | J19.1 | F10 | Rendered chart has no `NebariApp` or `HTTPRoute`; NetworkPolicy rules exact | 1 | covered |
 | J19.2 | F10 | On kind with Calico: only the landing pod reaches 8444, only workload namespaces reach 8443 | 2 | covered |
@@ -329,7 +329,7 @@ type Results map[string]string                           // check id -> pass | f
 + test/journeys/catalog/              package catalog + catalog_test.go (Tier 1)
 + test/journeys/cmd/summary/main.go   writes $GITHUB_STEP_SUMMARY (follows cmd/<binary> under the test tree)
 + test/journeys/gitops/user-secrets.yaml   Argo CD Application for register-app.sh
-+ test/journeys/nebari_test.go        //go:build journeys; P3.1, J1.3, later J10.1, J13.1, J14.2, J22.2
++ test/journeys/nebari_test.go        //go:build journeys; P3.1, J1.3, later J10.1, J14.2, J22.2
 + docs/ci/coverage.md                 generated
 ~ docs/architecture/contracts.md      pins file, catalog, check names
 ```
