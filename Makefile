@@ -1,4 +1,4 @@
-.PHONY: test lint build policy-test kind-up kind-down image image-load e2e-up e2e-down e2e-test nic-fixtures-check coverage-doc
+.PHONY: test lint build policy-test kind-up kind-down image image-load e2e-up e2e-down e2e-test journeys-test nic-fixtures-check coverage-doc
 
 IMG ?= ghcr.io/nebari-dev/nebari-user-secrets:dev
 
@@ -52,6 +52,12 @@ e2e-down:
 
 e2e-test:
 	go test -tags e2e ./test/e2e/... -v -count=1 -timeout 30m
+
+# Tier 3 journeys against a local Nebari (.github/workflows/journeys.yml sets
+# it up): needs KUBECONFIG, NEBARI_DOMAIN, KEYCLOAK_ISSUER, JOURNEY_USER and
+# JOURNEY_PASSWORD (test/journeys/seed-keycloak.sh writes the last two).
+journeys-test:
+	go test -tags journeys ./test/journeys -v -count=1 -timeout 30m
 
 # Manual drift check of the vendored NIC templates against nebari-infrastructure-core
 # at NIC_REF (needs gh). Not a CI gate.

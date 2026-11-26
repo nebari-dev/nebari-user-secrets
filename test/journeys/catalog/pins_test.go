@@ -115,7 +115,7 @@ var pinKeys = []string{
 	"GOLANGCI_LINT_VERSION", "HELM_VERSION", "KIND_VERSION", "KIND_NODE_IMAGE", "POLICY_K8S_VERSIONS",
 	"CALICO_VERSION", "GATEWAY_API_VERSION", "CERT_MANAGER_VERSION", "TRUST_MANAGER_VERSION",
 	"NIC_FIXTURES_REF", "NIC_REQUIRED_COMMIT", "KEYCLOAK_IMAGE", "CURL_IMAGE", "GO_BUILDER_IMAGE",
-	"PAUSE_IMAGE", "SANDBOX_ACTION_REF",
+	"PAUSE_IMAGE", "DEPLOY_ACTION_REF",
 }
 
 // copyCheckedKeys are the pins whose values the "no other copy" scan looks
@@ -125,7 +125,7 @@ var pinKeys = []string{
 // the 40-hex NIC commit. go.mod and go.sum are excluded because module
 // versions are a different namespace that can collide with these. Values
 // holding several versions (POLICY_K8S_VERSIONS) are checked word by word.
-// SANDBOX_ACTION_REF (v3.0.0) is left out: it is too generic to scan for, and
+// DEPLOY_ACTION_REF (v0.3.0) is left out: it is too generic to scan for, and
 // its only legitimate copies, the workflow uses: refs, are cross-checked below.
 var copyCheckedKeys = []string{
 	"GOLANGCI_LINT_VERSION", "HELM_VERSION", "KIND_VERSION", "KIND_NODE_IMAGE", "POLICY_K8S_VERSIONS",
@@ -143,7 +143,7 @@ var crossChecked = map[string]string{
 
 var (
 	dockerfileArg = regexp.MustCompile(`(?m)^ARG GO_BUILDER_IMAGE=(\S*)\s*$`)
-	sandboxRef    = regexp.MustCompile(`nebari-dev/action-nebari-sandbox(?:/[^@\s]*)?@([^\s"'#]+)`)
+	deployRef     = regexp.MustCompile(`nebari-dev/deploy-nebari-action(?:/[^@\s]*)?@([^\s"'#]+)`)
 )
 
 func TestPinsMatchSources(t *testing.T) {
@@ -182,11 +182,11 @@ func TestPinsMatchSources(t *testing.T) {
 			wantAtLeast: 1,
 		},
 		{
-			// None until the Tier 3 workflow lands.
-			name:        "workflow action-nebari-sandbox refs",
-			key:         "SANDBOX_ACTION_REF",
-			copies:      workflowSandboxRefs,
-			wantAtLeast: 0,
+			// The Tier 3 workflow (journeys.yml) holds them.
+			name:        "workflow deploy-nebari-action refs",
+			key:         "DEPLOY_ACTION_REF",
+			copies:      workflowDeployRefs,
+			wantAtLeast: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -225,7 +225,7 @@ func dockerfileBuilderArgs(root string) ([]string, error) {
 	return []string{string(m[0][1])}, nil
 }
 
-func workflowSandboxRefs(root string) ([]string, error) {
+func workflowDeployRefs(root string) ([]string, error) {
 	files, err := filepath.Glob(filepath.Join(root, ".github", "workflows", "*.yml"))
 	if err != nil {
 		return nil, err
@@ -236,7 +236,7 @@ func workflowSandboxRefs(root string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range sandboxRef.FindAllSubmatch(b, -1) {
+		for _, m := range deployRef.FindAllSubmatch(b, -1) {
 			refs = append(refs, string(m[1]))
 		}
 	}

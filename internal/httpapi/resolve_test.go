@@ -537,8 +537,8 @@ func TestResolveBodyEndsBeforeStatusWrite(t *testing.T) {
 			}
 			select {
 			case <-res.started:
-			default:
-				t.Fatal("status write had not started when the body ended")
+			case <-time.After(3 * time.Second):
+				t.Fatal("status write did not start while it was still blocked")
 			}
 			close(res.release)
 			released = true

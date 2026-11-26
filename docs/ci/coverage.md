@@ -2,7 +2,7 @@
 
 <!-- Generated from test/journeys/catalog.yaml by `make coverage-doc`. Do not edit by hand. -->
 
-Journey checks covered in CI: 18 of 37. `planned` and `not-covered` checks count as not covered. Tier 1 runs unit and chart tests, Tier 2 the kind suite (build tags `e2e` and `integration`) and the policy matrix (`run.sh:<section>`), Tier 3 real Nebari (build tag `journeys`). Platform checks are not journeys and are listed apart.
+Journey checks covered in CI: 19 of 37. `planned` and `not-covered` checks count as not covered. Tier 1 runs unit and chart tests, Tier 2 the kind suite (build tags `e2e` and `integration`) and the policy matrix (`run.sh:<section>`), Tier 3 real Nebari (build tag `journeys`). Platform checks are not journeys and are listed apart.
 
 ## Features
 
@@ -27,7 +27,7 @@ Journey checks covered in CI: 18 of 37. `planned` and `not-covered` checks count
 |---|---|---|---|---|---|---|
 | J1.1 | F1 | 2 | covered | `TestManagementCreateList` | - | - |
 | J1.2 | F1 | 3 | not-covered | - | Needs a browser login against the landing SPA client; landing has no userSecrets screens yet (nebari-landing#236) | landing ships the userSecrets screens and Tier 3 can drive a browser login |
-| J1.3 | F1 | 3 | planned | `TestManagementOnNebari` | Tier 3 on a real Nebari, with a user created in the Nebari realm, arrives with the Tier 3 workflow | Slice 8 |
+| J1.3 | F1 | 3 | covered | `TestManagementOnNebari` | - | - |
 | J2.1 | F1 | 1 | covered | `TestValueNeverReturned` | - | - |
 | J3.1 | F2 | 1 | covered | `TestBindings`, `TestEnvNameAlwaysPrefixed`, `TestResolveNeverUnprefixed`, `TestDeliveredName` | - | - |
 | J4.1 | F3 | 3 | not-covered | - | data-science-pack has no userSecrets integration released | a data-science-pack release with the userSecrets integration |
@@ -67,4 +67,4 @@ Journey checks covered in CI: 18 of 37. `planned` and `not-covered` checks count
 
 | Check | Tier | Status | Tests | Reason | Until |
 |---|---|---|---|---|---|
-| P3.1 | 3 | planned | `TestChartConvergesOnNebari` | Platform check (features F4, F11), not a journey; Tier 3 on a real Nebari arrives with the Tier 3 workflow | Slice 8 |
+| P3.1 | 3 | covered | `TestChartConvergesOnNebari` | - | - |
