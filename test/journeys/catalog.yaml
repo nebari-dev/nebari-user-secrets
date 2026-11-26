@@ -81,10 +81,8 @@ journeys:
         until: landing ships the userSecrets screens and Tier 3 can drive a browser login
       - id: J1.3
         tier: 3
-        status: planned
+        status: covered
         tests: [TestManagementOnNebari]
-        reason: Tier 3 on a real Nebari, with a user created in the Nebari realm, arrives with the Tier 3 workflow
-        until: Slice 8
   - id: J2
     feature: F1
     checks:
@@ -311,7 +309,5 @@ journeys:
 platform_checks:
   - id: P3.1
     tier: 3
-    status: planned
+    status: covered
     tests: [TestChartConvergesOnNebari]
-    reason: Platform check (features F4, F11), not a journey; Tier 3 on a real Nebari arrives with the Tier 3 workflow
-    until: Slice 8

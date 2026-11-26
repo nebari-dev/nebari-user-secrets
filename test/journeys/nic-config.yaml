@@ -1,0 +1,16 @@
+# NIC config for Tier 3 (.github/workflows/journeys.yml, passed to
+# nebari-dev/deploy-nebari-action as `config`). It is the action's built-in
+# default-config.yaml with a fixed project name, which NIC uses as the kind
+# cluster's name (kubectl context kind-us-journeys) and for the local GitOps
+# repository at ~/.nic/gitops/us-journeys. The workflow and
+# test/journeys/register-app.sh rely on both; change them together.
+project_name: us-journeys
+domain: nebari.local
+certificate:
+  type: selfsigned
+
+cluster:
+  local: {}
+
+repository:
+  local: {}

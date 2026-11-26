@@ -1,9 +1,10 @@
 version: "2"
 run:
   allow-parallel-runners: true
-  # Lint the e2e harness (test/e2e) too.
+  # Lint the e2e harness (test/e2e) and the Tier 3 journeys (test/journeys) too.
   build-tags:
     - e2e
+    - journeys
 linters:
   default: none
   enable:

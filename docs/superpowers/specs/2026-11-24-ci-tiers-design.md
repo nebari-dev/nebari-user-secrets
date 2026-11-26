@@ -38,7 +38,7 @@ From the CI slice on, every PR in the user-secrets stack should prove, in CI, as
 - **Stack:** plain chained PRs (#1 design, #2...#7), not `gh stack` (the extension is not installed). Only #1 targets `main`. GitHub retargets the next PR to `main` when its base branch merges and is deleted, so each PR enters the merge queue only once it is at the bottom of the stack. `merge_group` therefore only ever tests one PR on top of `main`.
 - **NIC:** the latest release, v0.18.0 (2026-11-18), predates nebari-infrastructure-core#787 (merge commit `de81b1131fbe26fca289f841347d84af727f692f`, 2026-11-23). Without #787 there is no `nebari-ca-issuer` or trust bundle, our chart's serving certificate cannot be issued, and every Tier 3 run fails at install. The user's decision: Tier 3 is built now and stays non-blocking until a NIC release contains #787.
 - **Runners:** standard `ubuntu-latest` (4 vCPU, 16 GB, 14 GB free disk for public repos). Whether Tier 3 fits is to be measured, not assumed (see "Report before turning anything on").
-- **Deploy action:** `nebari-dev/action-nebari-sandbox@v3.0.0` (its `action.yml` and `add-software-pack/action.yml` at that tag). It deploys NIC's local provider on kind on the runner, outputs `kubeconfig`, `gitops-dir`, `keycloak-realm-admin-password`, `keycloak-issuer-url`, `ca-cert-path`, `gateway-ip`, and takes `nic-version`, `in-cluster-dns`, `timing-report`, `resource-summary`. Its `token` input is the workflow `GITHUB_TOKEN`, not a repo secret.
+- **Deploy action:** `nebari-dev/deploy-nebari-action@v0.3.0` (its `action.yml` at that tag). It deploys NIC from a config file (Tier 3's is `test/journeys/nic-config.yaml`: the local kind provider and the local GitOps repository at `~/.nic/gitops/<project_name>`), takes `config`, `nic-version` (a release tag, or a Git ref such as a commit sha built from source), `wait` (Argo CD convergence) and `destroy`, and outputs `kubeconfig`, `domain`, `keycloak-issuer-url` and `keycloak-admin-password`. It has no app-registration step and no timing or resource reports, so Tier 3 registers its Applications with `test/journeys/register-app.sh` and measures its own. Its `token` input is the workflow `GITHUB_TOKEN`, not a repo secret.
 
 ## Approaches
 
@@ -49,6 +49,8 @@ From the CI slice on, every PR in the user-secrets stack should prove, in CI, as
 The user picked approach 1.
 
 **Deploy action, sandbox vs deploy-nebari-action:** `action-nebari-sandbox` is used. It has in-cluster DNS for Keycloak, the CA path, the GitOps dir and `add-software-pack`, and it emits the timing and resource reports the throughput report needs. `deploy-nebari-action` has a full Argo CD convergence wait that the sandbox lacks; `add-software-pack`'s own Healthy wait covers our Applications, and Tier 3 adds a short whole-platform convergence check of its own (all Applications `Synced` and `Healthy`) before journeys start.
+
+**Changed 2026-11-25 (user decision):** Tier 3 moved to `deploy-nebari-action` v0.3.0. The first proof runs showed `action-nebari-sandbox` v3.0.0 cannot deploy NIC v0.15.0 or later: its `wait-platform.sh` requires namespace `metallb-system`, which NIC removed in nebari-infrastructure-core#640 (first in v0.15.0), and its `scripts/install-nic.sh:189` `git clone --branch=<ref>` cannot fetch a commit sha, which the proof run needs. The sandbox is deprecated in favour of `deploy-nebari-action` (sandbox issue #102), whose own CI deploys NIC v0.18.0 on kind. Its `add-software-pack` equivalent is still an open PR, so Tier 3 has its own `register-app.sh`; the convergence wait is the action's own `wait`, plus Tier 3's check after registering.
 
 **Keeping Tier 3 non-blocking until NIC ships #787, mechanism (b) (my call, from my recommendation; the user picked approach 1 without choosing a or b):** Tier 3 is a required check from the day the ruleset requires anything. A gate step resolves the latest NIC release and asks GitHub whether that tag contains `de81b11`. While it does not, a `merge_group` run skips everything after the gate and passes with a summary line saying why (user decision: the queue should not pay the bring-up time for a failure we already expect); a tag or `workflow_dispatch` run runs in full, records every failure as a warning under a `NON-BLOCKING` heading, and exits 0. Once a release contains #787, the same job fails on any journey failure with nobody editing anything. The alternative (a), `continue-on-error` flipped by hand later, was rejected because nobody would remember to flip it.
 
@@ -127,7 +129,7 @@ Journey IDs are the spec's J1...J22 (`docs/design/user-secrets-spec.md` "Journey
 | Dependency | In CI | Why |
 |---|---|---|
 | Keycloak (Tier 2) | Real Keycloak in kind (the version NIC deploys, `KEYCLOAK_IMAGE`), realm `nebari` imported from a committed fixture: users `alice` and `bob`, client `user-secrets-e2e` (public, direct grants, set as the service's `clientID`, the same `azp` code path as the landing client) and `other-client`. Served over HTTPS with a certificate from NIC's CA issuer, trusted through the bundle. Test passwords are fixture values, not secrets | Replaces the static JWKS stand-in, so J1 and J7 exercise the real token path (issuer, `azp`, JWKS fetched from Keycloak). Signing-key rotation is not exercised on kind; `TestVerifyAfterKeyRotation` (Tier 1) covers it |
-| Keycloak (Tier 3) | The sandbox's own Keycloak; test users created through the admin API with the `keycloak-realm-admin-password` output | Action output, not a repo secret |
+| Keycloak (Tier 3) | The deployed Nebari's own Keycloak; the test client and user created through the admin API as the master realm admin (the deploy action's `keycloak-admin-password` output; the nebari realm's admin has no admin API roles) | Action output, not a repo secret |
 | Landing SPA browser login | Not mocked; J1.2 stays not-covered | A mock would prove only the mock |
 | Container registry | None. The image is built on the runner and loaded with `kind load` into `us-e2e` (Tier 2) or `kind-<cluster-name>` (Tier 3) | No push, so no `packages: write` token |
 | NIC templates (Tier 2) | Vendored copies at `de81b11`, drift-checked by `make nic-fixtures-check` | Already in place |
@@ -156,9 +158,9 @@ One file, `ci/pins.env`, `KEY=value` lines with a comment per pin giving its sou
 | `GO_BUILDER_IMAGE` | golang:1.26@sha256:<digest> (Task 28's carry-forward lands here) |
 | `PAUSE_IMAGE` | registry.k8s.io/pause:3.10@sha256:ee6521f2... |
 | `CURL_IMAGE` | curl image by digest, for in-cluster HTTP from `setup.sh` and the e2e helpers (added in Task 24) |
-| `SANDBOX_ACTION_REF` | v3.0.0 (documentation only, see below) |
+| `DEPLOY_ACTION_REF` | v0.3.0 (nebari-dev/deploy-nebari-action; documentation only, see below) |
 
-Readers: `test/e2e/setup.sh`, `test/policy/run-all.sh`, `test/policy/run.sh` and `hack/kind.sh` load it through `ci/load-pins.sh`, which exports each line as literal text (bash cannot `source` an unquoted value with spaces, such as `POLICY_K8S_VERSIONS`, and quoting would leak quotes into Make and `$GITHUB_ENV`); the Makefile `include`s it; workflows load it into `$GITHUB_ENV` in their first step; the Dockerfile takes `GO_BUILDER_IMAGE` as a build arg from the Makefile. Two pins cannot be read from a file: the Go constant `guard.PauseImage` and the `uses:` refs in workflows (GitHub does not template `uses:`). For these, Tier 1's catalog test asserts that the constant equals `PAUSE_IMAGE`, that the Dockerfile's `ARG GO_BUILDER_IMAGE` default equals the pin, and that every `nebari-dev/action-nebari-sandbox` ref in the workflows equals `SANDBOX_ACTION_REF`.
+Readers: `test/e2e/setup.sh`, `test/policy/run-all.sh`, `test/policy/run.sh` and `hack/kind.sh` load it through `ci/load-pins.sh`, which exports each line as literal text (bash cannot `source` an unquoted value with spaces, such as `POLICY_K8S_VERSIONS`, and quoting would leak quotes into Make and `$GITHUB_ENV`); the Makefile `include`s it; workflows load it into `$GITHUB_ENV` in their first step; the Dockerfile takes `GO_BUILDER_IMAGE` as a build arg from the Makefile. Two pins cannot be read from a file: the Go constant `guard.PauseImage` and the `uses:` refs in workflows (GitHub does not template `uses:`). For these, Tier 1's catalog test asserts that the constant equals `PAUSE_IMAGE`, that the Dockerfile's `ARG GO_BUILDER_IMAGE` default equals the pin, and that every `nebari-dev/deploy-nebari-action` ref in the workflows equals `DEPLOY_ACTION_REF`.
 
 ## Job summaries
 
@@ -168,7 +170,7 @@ Every tier's last step (`if: always()`) writes to `$GITHUB_STEP_SUMMARY`:
 2. every pin from `ci/pins.env`, as a table;
 3. the tier's check results from the catalog: covered checks run in this tier with pass or fail, and the not-covered and planned checks with their reasons.
 
-Tier 3 adds the resolved NIC release tag and its commit, whether it contains `NIC_REQUIRED_COMMIT` (and so whether this run is `BLOCKING` or `NON-BLOCKING`), and the sandbox's `timing-report` and `resource-summary`.
+Tier 3 adds the resolved NIC release tag and its commit, whether it contains `NIC_REQUIRED_COMMIT` (and so whether this run is `BLOCKING` or `NON-BLOCKING`), and Tier 3's own timing (wall time per step) and resource figures (runner memory and disk, pod requests against node allocatable), since the deploy action reports none.
 
 The user's request ended mid-sentence at "Write the resolved NIC version, the commit under test, and every"; this design reads it as "every pinned dependency version".
 
@@ -186,14 +188,14 @@ The user's request ended mid-sentence at "Write the resolved NIC version, the co
 Tier 3 steps:
 
 1. Load pins; resolve the latest NIC release (`gh api repos/nebari-dev/nebari-infrastructure-core/releases/latest`) and whether it contains `NIC_REQUIRED_COMMIT` (`compare/<commit>...<tag>`, status `ahead` or `identical`); set `BLOCKING`.
-2. `action-nebari-sandbox` with `nic-version: <resolved tag>`, `in-cluster-dns: true`, `timing-report: true`, `resource-summary: true`.
+2. `deploy-nebari-action` with `config: test/journeys/nic-config.yaml` (the action's default local kind config with a fixed `project_name`), `nic-version: <resolved tag>`, `wait: true` (Argo CD convergence) and `destroy: true`.
 3. Build the image from the checkout and `kind load` it into `kind-<cluster-name>`.
-4. `add-software-pack` for `user-secrets` with `chart-source: chart`, and an Application manifest from `test/journeys/gitops/` that sets the image tag to the build and the chart values a Nebari install would set.
+4. `test/journeys/register-app.sh` for `user-secrets` (the chart plus `values-nebari.yaml`) and `user-secrets-cluster` (`cluster/`): copies each into NIC's local GitOps repository (`~/.nic/gitops/<project_name>`), writes its Application manifest from `test/journeys/gitops/` into `apps/` (the image tag of the build and the chart values a Nebari install would set), commits, refreshes `nebari-root` and waits for the Application to exist.
 5. Platform convergence check: every Argo CD Application `Synced` and `Healthy`, bounded wait.
-6. `go test -tags journeys ./test/journeys/...` against the sandbox kubeconfig, with outputs passed as env.
+6. `go test -tags journeys ./test/journeys` against the deployed cluster's kubeconfig, with outputs passed as env.
 7. Summary. If `BLOCKING` is false: in `merge_group`, steps 2-6 are skipped and the job passes; on tag and dispatch, failures from steps 2-6 are summary warnings and the job exits 0. If true, they fail the job.
 
-**One-off proof run (user decision).** Before the CI slice's checkpoint, Tier 3 is run once by hand with the sandbox's `nic-version` set to `de81b1131fbe26fca289f841347d84af727f692f` (the #787 merge), on a scratch branch whose workflow is edited for that run only and never merged. Its passing output is the evidence that `P3.1` and `J1.3` are `covered`. No trigger in the merged workflows can select a NIC commit; they only resolve the latest release.
+**One-off proof run (user decision).** Before the CI slice's checkpoint, Tier 3 is run once by hand with the deploy action's `nic-version` set to `de81b1131fbe26fca289f841347d84af727f692f` (the #787 merge), on a scratch branch whose workflow is edited for that run only and never merged. Its passing output is the evidence that `P3.1` and `J1.3` are `covered`. No trigger in the merged workflows can select a NIC commit; they only resolve the latest release.
 
 ## Report before turning anything on
 
@@ -201,9 +203,9 @@ Before anyone changes the ruleset, the CI slice's checkpoint delivers a written 
 
 - **Merge queue:** available (public repo); the proposed ruleset (required checks `tier1`, `tier2-e2e`, the three `tier2-policy` checks, `tier3`; merge method squash; build concurrency and batch size from the measurements below).
 - **Stacking:** how the chained PRs interact with the queue (above), measured on one real retarget.
-- **Tier 3 time and size:** `timing-report` and `resource-summary` from the one-off proof run on the #787 commit (full run, journeys included) and from one `workflow_dispatch` run on the latest release (platform bring-up only, stopping at our install); the report labels which is which.
+- **Tier 3 time and size:** Tier 3's own timing and resource figures from the one-off proof run on the #787 commit (full run, journeys included) and from one `workflow_dispatch` run on the latest release (platform bring-up only, stopping at our install); the report labels which is which.
 - **Queue throughput:** with Tier 3 at T minutes and Tier 2 at its measured time, the queue merges at most one group per max(T, Tier 2) minutes per concurrent build; the report gives the batch size that keeps a typical day's merges under an hour, and what a failing batch costs (bisection reruns).
-- **Runner fit:** peak memory and disk from `resource-summary` against the standard runner's 16 GB and 14 GB; if it does not fit, the report says so and Tier 3 stays dispatch-only until a larger runner is decided.
+- **Runner fit:** memory and disk from Tier 3's resource figures against the standard runner's 16 GB and 14 GB; if it does not fit, the report says so and Tier 3 stays dispatch-only until a larger runner is decided.
 
 ## Coverage honesty
 
@@ -235,8 +237,8 @@ Promoted wording: **Bash cluster harnesses behind Make targets:** cluster test h
 | Required check names | new | nebari-user-secrets | `main` ruleset (set by the user) | n/a (new) | n/a | `tier1`; `tier2-e2e`; `tier2-policy (<version>)`; `tier3`. Renaming one breaks the ruleset silently |
 | Make targets for the kind tiers | changed-compatible | nebari-user-secrets | .github/workflows/ci.yml, docs/superpowers/plans/2026-11-20-user-secrets-service.md (validation commands), developers | `grep -rn 'e2e-up\|e2e-test\|policy-test' .github Makefile docs` | n/a | `make e2e-up`; `make e2e-test`; `make policy-test`. Same targets; versions now come from pins; `policy-test` accepts `K8S_VERSION` to run one version |
 | Static JWKS server in `e2e-keycloak` | changed-breaking | nebari-user-secrets | test/e2e/setup.sh (`gen_key`, `install_jwks`), test/e2e/fixtures/jwks.yaml, test/e2e/fixtures/values.yaml (issuer/JWKS URL), test/e2e/helpers_test.go (token minting), test/e2e/e2e_test.go:384 (`jwks.e2e-keycloak.svc:443` in the network test) | `grep -rn 'jwks\|e2e-keycloak\|KID' test/e2e` | n/a | replaced by real Keycloak; both consumers change in the CI slice |
-| Consumed: action-nebari-sandbox v3.0.0 inputs and outputs | unchanged | nebari-dev/action-nebari-sandbox | .github/workflows/journeys.yml | `gh api repos/nebari-dev/action-nebari-sandbox/contents/action.yml?ref=v3.0.0` | no | external; pinned by ref |
-| Consumed: NIC root App-of-Apps reads `apps/*.yaml` in the GitOps dir | unchanged (implicit) | nebari-infrastructure-core | add-software-pack, test/journeys/gitops | `gh api repos/nebari-dev/action-nebari-sandbox/contents/add-software-pack/action.yml?ref=v3.0.0` | no | add-software-pack wraps it |
+| Consumed: deploy-nebari-action v0.3.0 inputs and outputs | unchanged | nebari-dev/deploy-nebari-action | .github/workflows/journeys.yml | `gh api repos/nebari-dev/deploy-nebari-action/contents/action.yml?ref=v0.3.0` | no | external; pinned by ref |
+| Consumed: NIC root App-of-Apps reads `apps/*.yaml` in the GitOps dir | unchanged (implicit) | nebari-infrastructure-core | test/journeys/register-app.sh, test/journeys/gitops | `gh api repos/nebari-dev/nebari-infrastructure-core/contents/pkg/argocd/templates/apps/root.yaml?ref=<tag>` | no | register-app.sh writes to it |
 | Consumed: NIC cluster CA and trust bundle | unchanged | nebari-infrastructure-core | chart, Tier 2 fixtures, Tier 3 | docs/architecture/contracts.md "Consumed: NIC cluster CA and trust bundle" | n/a | Tier 3 is the first test against a real NIC |
 
 **Pins file.** Promises one line per pin, `KEY=value`, values without spaces except `POLICY_K8S_VERSIONS` (space-separated), comments with `#`. Bash readers load it with `ci/load-pins.sh` (literal export, never `source`), Make `include`s it, and workflows append it with `grep -v '^#' >> $GITHUB_ENV`. A missing key is a reader error, never a silent default.
@@ -326,7 +328,7 @@ type Results map[string]string                           // check id -> pass | f
 + test/journeys/catalog.yaml
 + test/journeys/catalog/              package catalog + catalog_test.go (Tier 1)
 + test/journeys/cmd/summary/main.go   writes $GITHUB_STEP_SUMMARY (follows cmd/<binary> under the test tree)
-+ test/journeys/gitops/user-secrets.yaml   Argo CD Application for add-software-pack
++ test/journeys/gitops/user-secrets.yaml   Argo CD Application for register-app.sh
 + test/journeys/nebari_test.go        //go:build journeys; P3.1, J1.3, later J10.1, J13.1, J14.2, J22.2
 + docs/ci/coverage.md                 generated
 ~ docs/architecture/contracts.md      pins file, catalog, check names
@@ -355,14 +357,14 @@ Production (Tier 2):
 Production (Tier 3, merge_group / tag / dispatch):
   journeys.yml tier3
     → resolve latest NIC release; compare with NIC_REQUIRED_COMMIT → BLOCKING
-    → action-nebari-sandbox (kind, NIC local provider)
-    → docker build; kind load into kind-<cluster-name>
-    → add-software-pack (chart from checkout → GitOps dir → root App-of-Apps → Argo CD)
+    → deploy-nebari-action (kind, NIC local provider, test/journeys/nic-config.yaml; waits for Argo CD)
+    → docker build; kind load into cluster <project_name>
+    → register-app.sh (chart from checkout → ~/.nic/gitops/<project_name> → root App-of-Apps → Argo CD)
     → convergence check (all Applications Synced/Healthy)
-    → go test -tags journeys ./test/journeys/... -json
-      → Keycloak admin API (realm admin password output) creates test users
+    → go test -tags journeys ./test/journeys -json
+      → Keycloak admin API (master admin password output) creates the test client and user
       → management API via port-forward; resolve from test pods
-    → summary --tier 3 (NIC tag, BLOCKING, timing-report, resource-summary)
+    → summary --tier 3 (NIC tag, BLOCKING, Tier 3's timing and resource figures)
 ```
 
 ### Component trees and DI
@@ -376,7 +378,7 @@ Production (Tier 3, merge_group / tag / dispatch):
 | Pins vs Go constant, Dockerfile, workflow refs | `LoadPins` | real files | unit (Tier 1) | the pins file is the single source |
 | Summary rendering | `RenderSummary` with fixed Pins and Results | fake inputs | unit (Tier 1) | summary lists commit, every pin, NIC tag, statuses |
 | Service vs Keycloak (Tier 2) | OIDC issuer URL | real Keycloak | e2e on kind | real token path for J1.1, J7.1 |
-| Service vs real Nebari (Tier 3) | sandbox kubeconfig and outputs | real NIC release | journeys | P3.1, J1.3 and later Tier 3 checks |
+| Service vs real Nebari (Tier 3) | deploy action kubeconfig and outputs | real NIC release | journeys | P3.1, J1.3 and later Tier 3 checks |
 | NIC containment gate | GitHub compare API | real; exercised by one `workflow_dispatch` before and after a qualifying release | manual, recorded in the report | the gate flips by itself |
 
 ## Journeys
@@ -387,7 +389,7 @@ The definition of done for the CI work itself (IDs C1...C8, separate from the se
 |---|------|-------|--------------|----------|
 | C1 | A PR from a fork gets every required check to a result without any repo secret | A fork PR shows `tier1`, `tier2-e2e` and the three `tier2-policy` checks passing and `tier3` skipped; the catalog test fails on a workflow that reads `secrets.` other than `GITHUB_TOKEN` | automated: catalog test table case; narrated: checks list of a real fork PR | |
 | C2 | A reviewer can tell from any job summary what was tested against what | Each tier's summary shows the commit SHA, every pin from `ci/pins.env`, and per check pass/fail or its not-covered reason; Tier 3 adds the NIC tag, `BLOCKING`/`NON-BLOCKING`, timing and resource reports | automated: `RenderSummary` table test; narrated: screenshots of real summaries from all three tiers | |
-| C3 | A gap cannot pass as covered | Tier 1 fails on each of: a `covered` check naming a missing test, a journey removed from the catalog, a missing reason, a stale `docs/ci/coverage.md`, a pin out of sync with the Go constant, the Dockerfile or the sandbox ref | automated: catalog table tests, one case per failure | |
+| C3 | A gap cannot pass as covered | Tier 1 fails on each of: a `covered` check naming a missing test, a journey removed from the catalog, a missing reason, a stale `docs/ci/coverage.md`, a pin out of sync with the Go constant, the Dockerfile or the deploy action ref | automated: catalog table tests, one case per failure | |
 | C4 | Changing a pin changes it everywhere | Editing `CALICO_VERSION` in `ci/pins.env` alone changes what `make e2e-up` installs; no pinned version string appears outside `ci/pins.env` except the three cross-checked ones | automated: catalog test grep; narrated: `setup.sh` log line after the edit | |
 | C5 | Tier 2 runs the commit's own image against real Keycloak and the policy matrix | `tier2-e2e` obtains tokens from Keycloak (no JWKS stand-in left in `test/e2e`); the three `tier2-policy` jobs each report their Kubernetes version | narrated: CI run links and log excerpts | |
 | C6 | Tier 3 installs our chart through Argo CD on NIC and runs journeys | The one-off run on `de81b11` passes `P3.1` and `J1.3` with the Application `Synced`/`Healthy` and the certificate issued by `nebari-ca-issuer`; a dispatch run on the latest release reports `NON-BLOCKING` and exits 0 | narrated: both run links and summaries | |
@@ -407,5 +409,5 @@ These are my calls, not the user's; each is open to correction at review.
 ## What is left to the builder
 
 - The Keycloak version to pin (match what the latest NIC release deploys) and the realm fixture's contents beyond two users and two clients.
-- The bounded waits (convergence check, add-software-pack `wait-timeout`), set from the measured runs.
+- The bounded waits (convergence check, register-app.sh's Application wait, the deploy action's `wait-timeout`), set from the measured runs.
 - How `go test -json` results map to check IDs: by test function name from the catalog.

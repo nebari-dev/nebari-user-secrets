@@ -1,0 +1,277 @@
+name: Journeys
+
+# Tier 3: a real Nebari (NIC's local kind provider, deployed by
+# nebari-dev/deploy-nebari-action with test/journeys/nic-config.yaml) with this
+# commit's chart installed through Argo CD, and the journeys of test/journeys
+# against it. The job name is a
+# required check name in the main ruleset (docs/architecture/contracts.md,
+# "Required check names"): renaming it is a contract change.
+#
+# Blocking is decided per run by cmd/nicgate: only once the latest NIC release
+# contains NIC_REQUIRED_COMMIT (nebari-infrastructure-core#787) does a failure
+# fail the job. Until then a merge_group run skips everything after the gate,
+# and tag and dispatch runs report failures as warnings and exit 0.
+on:
+  pull_request:
+  merge_group:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # An explicit bash shell runs with -eo pipefail, so `go test ... | tee` fails the step.
+    shell: bash
+
+env:
+  # Commit under test, and the merge queue's head and base (empty outside merge_group).
+  COMMIT: ${{ github.sha }}
+  QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+  QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+
+jobs:
+  tier3:
+    # Reports as skipped on pull requests (fork PRs get no token to deploy with).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load pins
+        # Versions come from ci/pins.env, the only place they are written.
+        run: grep -v '^#' ci/pins.env | grep . >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Resolve the NIC release
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: go run ./test/journeys/cmd/nicgate
+      - name: Decide whether to run
+        # Everything after the gate runs unless this is a merge queue run
+        # against a NIC release without #787.
+        id: run
+        env:
+          BLOCKING: ${{ steps.gate.outputs.blocking }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$BLOCKING" == true || "$EVENT" != merge_group ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the NIC project
+        id: project
+        if: steps.run.outputs.run == 'true'
+        # NIC names the kind cluster after project_name and keeps the local
+        # GitOps repository at ~/.nic/gitops/<project_name>.
+        run: |
+          project=$(awk '/^project_name:/ {print $2; exit}' test/journeys/nic-config.yaml)
+          : "${project:?test/journeys/nic-config.yaml has no project_name}"
+          {
+            echo "NIC_PROJECT=$project"
+            echo "GITOPS_DIR=$HOME/.nic/gitops/$project"
+          } >> "$GITHUB_ENV"
+          echo "deploy $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+      - name: Deploy Nebari
+        id: deploy
+        if: steps.run.outputs.run == 'true'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        uses: nebari-dev/deploy-nebari-action@v0.3.0
+        with:
+          config: test/journeys/nic-config.yaml
+          # Always the gate's release tag; the action downloads that release.
+          nic-version: ${{ steps.gate.outputs.nic-tag }}
+          wait: true
+          destroy: true
+          token: ${{ github.token }}
+      - name: Build the image and load it into the cluster
+        id: image
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        run: |
+          echo "image $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          img="ghcr.io/nebari-dev/nebari-user-secrets:ci-${GITHUB_SHA}"
+          # The pinned kind, by absolute path, whatever else is on PATH. The
+          # kind cluster is named <project_name>; kind-<project_name> is only
+          # its kubectl context.
+          go install "sigs.k8s.io/kind@${KIND_VERSION}"
+          kind="$(go env GOPATH)/bin/kind"
+          "$kind" version
+          make image-load IMG="$img"
+          "$kind" load docker-image "$img" --name "$NIC_PROJECT"
+          echo "USER_SECRETS_IMAGE=$img" >> "$GITHUB_ENV"
+      - name: Seed Keycloak
+        id: seed
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        env:
+          KEYCLOAK_ADMIN_PASSWORD: ${{ steps.deploy.outputs.keycloak-admin-password }}
+        run: |
+          echo "seed $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          bash test/journeys/seed-keycloak.sh
+      - name: Prepare the install
+        id: prepare
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        env:
+          ISSUER_BASE: ${{ steps.deploy.outputs.keycloak-issuer-url }}
+          DOMAIN: ${{ steps.deploy.outputs.domain }}
+        run: |
+          echo "prepare $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          : "${ISSUER_BASE:?the deploy action gave no keycloak-issuer-url}"
+          : "${DOMAIN:?the deploy action gave no domain}"
+          # The realm's issuer: Keycloak's external URL (KC_HOSTNAME) plus the realm.
+          {
+            echo "KEYCLOAK_ISSUER=${ISSUER_BASE}/realms/nebari"
+            echo "NEBARI_DOMAIN=${DOMAIN}"
+          } >> "$GITHUB_ENV"
+          # The registered workload namespace must exist before the chart
+          # syncs: the chart renders a pod-reader Role into it.
+          kubectl create namespace test-consumer --dry-run=client -o yaml | kubectl apply -f -
+          # The chart as committed, plus the Tier 3 values file its Application names.
+          dir="$RUNNER_TEMP/user-secrets-chart"
+          rm -rf "$dir"
+          cp -r chart "$dir"
+          cp test/journeys/gitops/values-nebari.yaml "$dir/"
+          echo "CHART_DIR=$dir" >> "$GITHUB_ENV"
+      - name: Register the chart
+        id: register-chart
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        run: |
+          echo "register-chart $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          bash test/journeys/register-app.sh user-secrets "$CHART_DIR" test/journeys/gitops/user-secrets.yaml
+      - name: Register the cluster bundle
+        id: register-cluster
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        run: |
+          echo "register-cluster $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          bash test/journeys/register-app.sh user-secrets-cluster cluster test/journeys/gitops/user-secrets-cluster.yaml
+      - name: Platform convergence
+        id: converge
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        # Within 10 minutes: every Argo CD Application Healthy, and ours
+        # (user-secrets, user-secrets-cluster) also Synced. NIC's own
+        # Applications may stay OutOfSync while Healthy (gateway-config,
+        # httproutes and nebari-root did in proof run 45643916686); the full
+        # table is printed either way so those show in the log.
+        run: |
+          echo "converge $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          deadline=$((SECONDS + 600))
+          while :; do
+            pending=$(kubectl -n argocd get applications -o json | jq -r '
+              ["user-secrets", "user-secrets-cluster"] as $ours
+              | ([.items[].metadata.name] as $have | $ours - $have | map("\(.) missing")[]),
+                (.items[]
+                  | select(.status.health.status != "Healthy"
+                      or ((.metadata.name | IN($ours[])) and .status.sync.status != "Synced"))
+                  | "\(.metadata.name) \(.status.sync.status)/\(.status.health.status)")')
+            if [[ -z "$pending" ]]; then
+              kubectl -n argocd get applications
+              break
+            fi
+            if ((SECONDS >= deadline)); then
+              kubectl -n argocd get applications || true
+              echo "::error::After 10 minutes, not Healthy (or, for ours, not Synced):"
+              echo "$pending"
+              exit 1
+            fi
+            sleep 10
+          done
+      - name: Journeys
+        id: journeys
+        if: steps.run.outputs.run == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: ${{ steps.gate.outputs.blocking != 'true' }}
+        # KUBECONFIG (from the deploy action), KEYCLOAK_ISSUER, NEBARI_DOMAIN
+        # and JOURNEY_USER/JOURNEY_PASSWORD come from $GITHUB_ENV.
+        run: |
+          echo "journeys $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          # Only the journeys package: the catalog, gate and summary tests under
+          # test/journeys are Tier 1 and run there.
+          go test -tags journeys ./test/journeys -json -count=1 -timeout 30m | tee journeys.json
+      - name: Timing and resources
+        # The deploy action reports neither, so Tier 3 measures its own:
+        # wall time between the steps' start marks, the runner's memory and
+        # disk, and the pods' requests against each node's allocatable.
+        if: always() && steps.run.outputs.run == 'true'
+        run: |
+          echo "end $(date +%s)" >> "$RUNNER_TEMP/tier3-marks"
+          {
+            echo "| Phase | Seconds |"
+            echo "|---|---|"
+            awk 'NR > 1 { printf "| %s | %d |\n", name, $2 - t } { name = $1; t = $2 }' "$RUNNER_TEMP/tier3-marks"
+          } > "$RUNNER_TEMP/tier3-timing.md"
+          {
+            echo "Runner, after the journeys:"
+            echo '```'
+            free -m
+            df -h / "$RUNNER_TEMP"
+            echo '```'
+            if [[ -n "${KUBECONFIG:-}" ]]; then
+              echo "Pod requests against node allocatable:"
+              echo '```'
+              kubectl describe nodes | sed -n '/^Name:/p;/^Allocatable:/,/^System Info:/p;/^Allocated resources:/,/^Events:/p' || true
+              echo '```'
+            fi
+          } > "$RUNNER_TEMP/tier3-resources.md"
+          # Step summaries cannot be read back through the API; keep a copy in
+          # the job log so the figures can be collected later.
+          cat "$RUNNER_TEMP/tier3-timing.md" "$RUNNER_TEMP/tier3-resources.md"
+
+      - name: Summary
+        if: always()
+        env:
+          NIC_TAG: ${{ steps.gate.outputs.nic-tag }}
+          NIC_COMMIT: ${{ steps.gate.outputs.nic-commit }}
+          BLOCKING: ${{ steps.gate.outputs.blocking }}
+          RUN: ${{ steps.run.outputs.run }}
+        run: |
+          args=(--tier 3 --commit "$COMMIT" --queue-head "$QUEUE_HEAD" --queue-base "$QUEUE_BASE"
+            --results journeys.json --nic-tag "$NIC_TAG" --nic-commit "$NIC_COMMIT")
+          if [[ "$BLOCKING" == true ]]; then
+            args+=(--blocking)
+          fi
+          if [[ "$RUN" == false ]]; then
+            args+=(--note "Tier 3 skipped in the merge queue: NIC $NIC_TAG does not contain #787 (non-blocking)")
+          fi
+          if [[ -f "$RUNNER_TEMP/tier3-timing.md" ]]; then
+            args+=(--timing "$(cat "$RUNNER_TEMP/tier3-timing.md")")
+          fi
+          if [[ -f "$RUNNER_TEMP/tier3-resources.md" ]]; then
+            args+=(--resources "$(cat "$RUNNER_TEMP/tier3-resources.md")")
+          fi
+          go run ./test/journeys/cmd/summary "${args[@]}"
+      - name: Fail when blocking
+        if: always()
+        env:
+          BLOCKING: ${{ steps.gate.outputs.blocking }}
+          OUTCOMES: >-
+            deploy=${{ steps.deploy.outcome }}
+            image=${{ steps.image.outcome }}
+            seed=${{ steps.seed.outcome }}
+            prepare=${{ steps.prepare.outcome }}
+            register-chart=${{ steps.register-chart.outcome }}
+            register-cluster=${{ steps.register-cluster.outcome }}
+            converge=${{ steps.converge.outcome }}
+            journeys=${{ steps.journeys.outcome }}
+        run: |
+          failed=()
+          for o in $OUTCOMES; do
+            [[ "${o#*=}" == failure ]] && failed+=("${o%%=*}")
+          done
+          if ((${#failed[@]} == 0)); then
+            exit 0
+          fi
+          if [[ "$BLOCKING" == true ]]; then
+            echo "::error::Tier 3 failed (BLOCKING): ${failed[*]}"
+            exit 1
+          fi
+          echo "::warning::Tier 3 failed (NON-BLOCKING until a NIC release contains #787): ${failed[*]}"

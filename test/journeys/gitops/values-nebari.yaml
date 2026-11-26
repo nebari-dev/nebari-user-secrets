@@ -1,0 +1,32 @@
+# Tier 3 chart values: what a Nebari install sets, for the NIC of
+# test/journeys/nic-config.yaml (local provider, domain nebari.local, Keycloak
+# base path empty). The Tier 3
+# workflow copies this file into the chart directory it registers, and the
+# Application (user-secrets.yaml) adds the image and the token issuer, which
+# depend on the run.
+registry:
+  apps:
+    # The app journeys bind secrets to. Its namespace is created by the
+    # workflow before the chart syncs: the chart renders a pod-reader Role
+    # into every registered workload namespace.
+    - id: test-consumer
+      workloads:
+        - namespace: test-consumer
+          serviceAccount: tc-workload
+  creators: []
+keycloak:
+  # Signing keys from the in-cluster Keycloak Service, as NIC's own consumers
+  # fetch them (NIC writer.go KeycloakServiceURL; the landing webapi and the
+  # Longhorn SecurityPolicy remoteJWKS). Tokens carry the external issuer,
+  # which the Application sets in keycloak.issuers.
+  jwksURL: http://keycloak-keycloakx-http.keycloak.svc.cluster.local:8080/realms/nebari/protocol/openid-connect/certs
+  # The public client test/journeys/seed-keycloak.sh creates for the journey
+  # user's password grant (the token's azp).
+  clientID: user-secrets-journeys
+landing:
+  # NIC deploys nebari-landing into nebari-system; its frontend pods carry
+  # these selector labels (nebari-landing chart, nebari-landing.frontend.selectorLabels).
+  namespace: nebari-system
+  podSelector:
+    app.kubernetes.io/name: nebari-landing
+    app.kubernetes.io/component: frontend
