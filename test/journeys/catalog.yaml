@@ -163,8 +163,8 @@ journeys:
       - id: J10.1
         tier: 3
         status: planned
-        reason: Needs the init container to deliver into a test-consumer pod
-        until: Slice 9 (init container)
+        reason: The init container delivers since Slice 9; the rotation journey (rotate, then a new pod gets the new value; delete removes it) is Task 36
+        until: Slice 11 (Task 36)
   - id: J11
     feature: F7
     checks:
@@ -191,10 +191,9 @@ journeys:
     feature: F3
     checks:
       - id: J13.1
-        tier: 3
-        status: planned
-        reason: Needs the init container to write files into a test-consumer pod
-        until: Slice 9 (init container)
+        tier: 2
+        status: covered
+        tests: [TestInitDeliversFiles]
       - id: J13.2
         tier: 3
         status: not-covered
@@ -242,14 +241,12 @@ journeys:
         tests: [TestResolveHandler, TestServiceRecordDelivery, TestRecordDeliveryKeepsOtherOutcome]
       - id: J17.2
         tier: 1
-        status: planned
-        reason: Soft and strict behaviour belongs to the init container (unit tests)
-        until: Slice 9 (init container)
+        status: covered
+        tests: [TestInitMain, TestExecWithEnv]
       - id: J17.3
         tier: 2
-        status: planned
-        reason: Soft and strict behaviour belongs to the init container (on kind)
-        until: Slice 9 (init container)
+        status: covered
+        tests: [TestInitDeliversFiles]
   - id: J18
     feature: F12
     checks:

@@ -2,7 +2,7 @@
 
 <!-- Generated from test/journeys/catalog.yaml by `make coverage-doc`. Do not edit by hand. -->
 
-Journey checks covered in CI: 19 of 37. `planned` and `not-covered` checks count as not covered. Tier 1 runs unit and chart tests, Tier 2 the kind suite (build tags `e2e` and `integration`) and the policy matrix (`run.sh:<section>`), Tier 3 real Nebari (build tag `journeys`). Platform checks are not journeys and are listed apart.
+Journey checks covered in CI: 22 of 37. `planned` and `not-covered` checks count as not covered. Tier 1 runs unit and chart tests, Tier 2 the kind suite (build tags `e2e` and `integration`) and the policy matrix (`run.sh:<section>`), Tier 3 real Nebari (build tag `journeys`). Platform checks are not journeys and are listed apart.
 
 ## Features
 
@@ -38,12 +38,12 @@ Journey checks covered in CI: 19 of 37. `planned` and `not-covered` checks count
 | J7.3 | F4 | - | not-covered | - | The DaskCluster admission policy lives in dask-gateway-pack and is tested there | never in this repo |
 | J8.1 | F4 | 1 | covered | `TestPodVerifier`, `TestResolveFiltersByApp`, `TestResolveHandler`, `TestVerify`, `TestRoutes` | - | - |
 | J9.1 | F11 | 2 | covered | `TestDurabilityAcrossRestart`, `TestDurabilityThroughResolve` | - | - |
-| J10.1 | F1 | 3 | planned | - | Needs the init container to deliver into a test-consumer pod | Slice 9 (init container) |
+| J10.1 | F1 | 3 | planned | - | The init container delivers since Slice 9; the rotation journey (rotate, then a new pod gets the new value; delete removes it) is Task 36 | Slice 11 (Task 36) |
 | J11.1 | F7 | 1 | covered | `TestAuditLines`, `TestAuditNeverLogsSecrets`, `TestResolveHandler` | - | - |
 | J11.2 | F7 | 2 | covered | `TestResolveDeniedAudit` | - | - |
 | J12.1 | F4 | 1 | covered | `TestCompare`, `TestGuard` | - | - |
 | J12.2 | F4 | 2 | covered | `TestGuardFailClosed`, `TestGuardVerifiedSinceMoves`, `TestResolveGuard` | - | - |
-| J13.1 | F3 | 3 | planned | - | Needs the init container to write files into a test-consumer pod | Slice 9 (init container) |
+| J13.1 | F3 | 2 | covered | `TestInitDeliversFiles` | - | - |
 | J13.2 | F3 | 3 | not-covered | - | data-science-pack and dask-gateway-pack userSecrets integrations are not released | releases of both packs with the userSecrets integration |
 | J14.1 | F8 | 2 | planned | - | A consumer by values only needs the injector | Slice 10 (injector) |
 | J14.2 | F8 | 3 | planned | - | A consumer pack installed by Argo CD on real Nebari needs the injector | Slice 10 (injector) |
@@ -51,8 +51,8 @@ Journey checks covered in CI: 19 of 37. `planned` and `not-covered` checks count
 | J15.2 | F9 | - | not-covered | - | The data-science-pack and dask-gateway-pack golden files live in those repos | never in this repo |
 | J16.1 | F3 | - | not-covered | - | dask-gateway-pack userSecrets integration is not released | a dask-gateway-pack release with the userSecrets integration |
 | J17.1 | F5 | 1 | covered | `TestResolveHandler`, `TestServiceRecordDelivery`, `TestRecordDeliveryKeepsOtherOutcome` | - | - |
-| J17.2 | F5 | 1 | planned | - | Soft and strict behaviour belongs to the init container (unit tests) | Slice 9 (init container) |
-| J17.3 | F5 | 2 | planned | - | Soft and strict behaviour belongs to the init container (on kind) | Slice 9 (init container) |
+| J17.2 | F5 | 1 | covered | `TestInitMain`, `TestExecWithEnv` | - | - |
+| J17.3 | F5 | 2 | covered | `TestInitDeliversFiles` | - | - |
 | J18.1 | F12 | - | not-covered | - | The sharing warning is data-science-pack share dialog UI, not in this repo | never in this repo |
 | J19.1 | F10 | 1 | covered | `TestNoExternalSurface`, `TestNetworkPolicyPorts` | - | - |
 | J19.2 | F10 | 2 | covered | `TestNetworkExposure` | - | - |
